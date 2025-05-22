@@ -91,33 +91,17 @@ class saury_model(nn.Module):
             self.positional_encoding = PositionalEncoding(d_model=kernelNumber)
         elif posEncType == 'stochastic':
             self.positional_encoding = StochasticPositionalEncoding(d_model=kernelNumber)
-        else: # Also handles TUPE case, where positional encoding is added in the transformer layer
+        else:
             self.positional_encoding = None
-        # if posEncType == 'united':
-        #     tupe_config = TUPEConfig(
-        #         max_len=256,
-        #         d_model=kernelNumber,
-        #         num_heads=MHANumber,
-        #         num_layers=transformerNumber,
-        #     )
-        #     self.transformer = TUPEEncoder(tupe_config)
-        # else:
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model=kernelNumber, nhead=MHANumber, batch_first=True),
             num_layers=transformerNumber
         )
-        # self.transformer = nn.TransformerEncoder(
-        #     nn.TransformerEncoderLayer(d_model=kernelNumber, nhead=MHANumber, batch_first=True),
-        #     num_layers=transformerNumber
-        # )
         self.flatten = nn.Flatten()
-        # Hout, Wout = self.get_output_size(1, 256, k=[1, kernelWidth], s=[1, 1], p=[0, 0], d=[1, 1])
         self.decoder = bnn.BayesLinear(prior_mu=priorMu, prior_sigma=priorSigma,
                                         in_features=kernelNumber * Wout, out_features=4)
 
     def forward(self, x):
-        # x = self.conv1(x)
-        # x = F.relu(x)
         for conv in self.conv_layers:
             x = conv(x)
             x = F.relu(x)
@@ -135,83 +119,83 @@ class saury_model(nn.Module):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
 
-    # def lossFunction(self, outputs, targets, KLweight):
-    #     MSE = nn.MSELoss()
-    #     BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
-    #     return MSE(outputs, targets) + KLweight * BKLoss(self)
+    def lossFunction(self, outputs, targets, KLweight):
+        MSE = nn.MSELoss()
+        BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
+        return MSE(outputs, targets) + KLweight * BKLoss(self)
 
-    # def fit(self, trainLoader, valLoader, nEpochs, learningRate, schedulerStep, stopperPatience, stopperTol, maxKLweight, maxKLepoch, trainingProcessPath, prefix):
-    #     self.to(self.device)
-    #     criterion = self.lossFunction
-    #     optimizer = optim.Adam(self.parameters(), lr=learningRate)
-    #     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-    #     earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
-    #     trainErrors = []
-    #     valErrors = []
-    #     epochTimes = []
-    #     bestValLoss = float('inf')
-    #     bestModelPath = trainingProcessPath / f'{prefix}_best_model.pth'
+    def fit(self, trainLoader, valLoader, trainingProcessPath, prefix, nEpochs = 50, learningRate = 0.0005, schedulerStep = 15, stopperPatience = 5, stopperTol = 1e-4, maxKLweight = 0.01, maxKLepoch = 50):
+        self.to(self.device)
+        criterion = self.lossFunction
+        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        bestModelPath = trainingProcessPath / f'{prefix}_best_model.pth'
 
-    #     print('Training Model')
-    #     print('Initial learning rate:', scheduler.get_last_lr())
-    #     trainedEpochs = 0
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
 
-    #     for epoch in range(nEpochs):
-    #         KLweight = maxKLweight * min(1, epoch / maxKLepoch)
-    #         startTime = time.time()
-    #         self.train()
-    #         runningLoss = 0.0
-    #         for inputs, targets in trainLoader:
-    #             inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-    #             targets = targets.to(self.device)
-    #             optimizer.zero_grad()
-    #             outputs = self(inputs)
-    #             loss = criterion(outputs, targets, KLweight)
-    #             loss.backward()
-    #             optimizer.step()
-    #             runningLoss += loss.item()
+        for epoch in range(nEpochs):
+            KLweight = maxKLweight * min(1, epoch / maxKLepoch)
+            startTime = time.time()
+            self.train()
+            runningLoss = 0.0
+            for inputs, targets in trainLoader:
+                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets, KLweight)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
 
-    #         trainLoss = runningLoss / len(trainLoader)
-    #         trainErrors.append(trainLoss)
-    #         trainedEpochs += 1
-    #         valLoss = self.evaluate(valLoader, nn.MSELoss())
-    #         valErrors.append(valLoss)
+            trainLoss = runningLoss / len(trainLoader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(valLoader, nn.MSELoss())
+            valErrors.append(valLoss)
 
-    #         if earlyStop.check(valLoss):
-    #             print(f'Early stopping at epoch {epoch + 1}')
-    #             break
+            if earlyStop.check(valLoss):
+                print(f'Early stopping at epoch {epoch + 1}')
+                break
 
-    #         lastLR = scheduler.get_last_lr()
-    #         scheduler.step(valLoss)
-    #         if lastLR != scheduler.get_last_lr():
-    #             print(f'Learning rate changed to {scheduler.get_last_lr()}')
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-    #         print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
-    #         epochTimes.append(time.time() - startTime)
+            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
 
-    #         if valLoss < bestValLoss:
-    #             bestValLoss = valLoss
-    #             torch.save(self.state_dict(), bestModelPath)
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                torch.save(self.state_dict(), bestModelPath)
 
-    #     return trainErrors, valErrors, trainedEpochs, epochTimes
+        return trainErrors, valErrors, trainedEpochs, epochTimes
 
-    # def evaluate(self, loader, criterion):
-    #     self.eval()
-    #     totalLoss = 0.0
-    #     with torch.no_grad():
-    #         for inputs, targets in loader:
-    #             inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-    #             targets = targets.to(self.device)
-    #             outputs = self(inputs)
-    #             loss = criterion(outputs, targets)
-    #             totalLoss += loss.item()
-    #     avgLoss = totalLoss / len(loader)
-    #     return avgLoss
+    def evaluate(self, loader, criterion):
+        self.eval()
+        totalLoss = 0.0
+        with torch.no_grad():
+            for inputs, targets in loader:
+                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                totalLoss += loss.item()
+        avgLoss = totalLoss / len(loader)
+        return avgLoss
 
     def predict(self, testLoader, numPredictions):
         self.eval()
         allPredictions = []
-        for _ in tqdm(range(numPredictions)):
+        for _ in tqdm(range(numPredictions), desc='Predicting', file=sys.stdout):
             predictions = []
             with torch.no_grad():
                 for inputs, _ in testLoader:
@@ -234,7 +218,6 @@ class saury_model(nn.Module):
             print('Error loading model')
 
 class TPCNetPositionalEncoding(nn.Module):
-    # custom code
     def __init__(self, num_features, sequence_len=6, d_model=9):
         super(TPCNetPositionalEncoding, self).__init__()
         self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -253,7 +236,6 @@ class TPCNetPositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
     def forward(self, x):
         # x has shape [seq_len, bat_size, embed_dim]
-        #print("self.pe[:x.size(0), :]=",self.pe[:x.size(0), :].shape)
         x = x + self.pe[:x.size(0), :]
         return x
 
@@ -466,111 +448,98 @@ class tpcnet_all_phases(nn.Module):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
 
-    # def lossFunction(self, outputs, targets, KLweight):
-    #     MSE = nn.MSELoss()
-    #     return MSE(outputs, targets)
+    def lossFunction(self, outputs, targets):
+        MSE = nn.MSELoss()
+        return MSE(outputs, targets)
 
-    # def fit(self, trainLoader, valLoader, nEpochs, learningRate, schedulerStep, stopperPatience, stopperTol, maxKLweight, maxKLepoch, trainingProcessPath, prefix):
-    #     self.to(self.device)
-    #     criterion = self.lossFunction
-    #     optimizer = optim.Adam(self.parameters(), lr=learningRate)
-    #     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-    #     earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
-    #     trainErrors = []
-    #     valErrors = []
-    #     epochTimes = []
-    #     bestValLoss = float('inf')
-    #     #TODO: save with epoch number in name for interruped training, add handling to train if not at provided epochs
-    #     bestModelPath = trainingProcessPath / f'{prefix}_best_model.pth'
+    def fit(self, trainLoader, valLoader, trainingProcessPath, prefix, nEpochs = 100, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0):
+        self.to(self.device)
+        criterion = self.lossFunction
+        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        #TODO: save with epoch number in name for interruped training, add handling to train if not at provided epochs
+        bestModelPath = trainingProcessPath / f'{prefix}_best_model.pth'
 
-    #     print('Training Model')
-    #     print('Initial learning rate:', scheduler.get_last_lr())
-    #     trainedEpochs = 0
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
 
-    #     for epoch in range(nEpochs):
-    #         KLweight = maxKLweight * min(1, epoch / maxKLepoch)
-    #         startTime = time.time()
-    #         self.train()
-    #         runningLoss = 0.0
-    #         for inputs, targets in tqdm(trainLoader, file=sys.stdout):
-    #             inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-    #             targets = targets.to(self.device)
-    #             optimizer.zero_grad()
-    #             outputs = self(inputs)
-    #             # print('Outputs:', outputs[0])
-    #             # print('Targets:', targets[0])
-    #             loss = criterion(outputs, targets, KLweight)
-    #             # print('Loss:', loss.item())
-    #             loss.backward()
-    #             optimizer.step()
-    #             runningLoss += loss.item()
+        for epoch in range(nEpochs):
+            startTime = time.time()
+            self.train()
+            runningLoss = 0.0
+            for inputs, targets in tqdm(trainLoader, file=sys.stdout, desc='Training'):
+                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
 
-    #         trainLoss = runningLoss / len(trainLoader)
-    #         trainErrors.append(trainLoss)
-    #         trainedEpochs += 1
-    #         valLoss = self.evaluate(valLoader, nn.MSELoss())
-    #         valErrors.append(valLoss)
+            trainLoss = runningLoss / len(trainLoader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(valLoader, nn.MSELoss())
+            valErrors.append(valLoss)
             
-    #         if trainLoss == np.NaN or valLoss == np.NaN:
-    #             print('NaN loss detected, stopping training')
-    #             break
+            if trainLoss == np.NaN or valLoss == np.NaN:
+                print('NaN loss detected, stopping training')
+                break
             
-    #         if earlyStop.check(valLoss):
-    #             print(f'Early stopping at epoch {epoch + 1}')
-    #             break
+            if earlyStop.check(valLoss):
+                print(f'Early stopping at epoch {epoch + 1}')
+                break
 
-    #         lastLR = scheduler.get_last_lr()
-    #         scheduler.step(valLoss)
-    #         if lastLR != scheduler.get_last_lr():
-    #             print(f'Learning rate changed to {scheduler.get_last_lr()}')
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-    #         print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
-    #         epochTimes.append(time.time() - startTime)
+            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
 
-    #         # Lmao this saves every epoch instead of every run at the moment. Oops.
-    #         if valLoss < bestValLoss:
-    #             bestValLoss = valLoss
-    #             torch.save(self.state_dict(), bestModelPath)
+            # Lmao this saves every epoch instead of every run at the moment. Oops.
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                torch.save(self.state_dict(), bestModelPath)
 
-    #     return trainErrors, valErrors, trainedEpochs, epochTimes
+        return trainErrors, valErrors, trainedEpochs, epochTimes
 
-    # def evaluate(self, loader, criterion):
-    #     self.eval()
-    #     totalLoss = 0.0
-    #     with torch.no_grad():
-    #         for inputs, targets in loader:
-    #             inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-    #             targets = targets.to(self.device)
-    #             outputs = self(inputs)
-    #             loss = criterion(outputs, targets)
-    #             totalLoss += loss.item()
-    #     avgLoss = totalLoss / len(loader)
-    #     return avgLoss
+    def evaluate(self, loader, criterion):
+        self.eval()
+        totalLoss = 0.0
+        with torch.no_grad():
+            for inputs, targets in loader:
+                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                totalLoss += loss.item()
+        avgLoss = totalLoss / len(loader)
+        return avgLoss
 
     def predict(self, testLoader, numPredictions):
+        if numPredictions  > 1:
+            print('Warning: numPredictions > 1, but this model is not Bayesian, so all predictions will be the same. Re-run with numPredictions = 1 for faster inference.')
         self.eval()
         allPredictions = []
         for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
             predictions = []
             with torch.no_grad():
-                for inputs, _ in testLoader:
+                for inputs, *_ in testLoader:
                     inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
                     outputs = self(inputs)
                     predictions.append(outputs)
             allPredictions.append(torch.cat(predictions, dim=0))
         return torch.stack(allPredictions, dim=0)
 
-    # def loadStateDict(self, path):
-    #     print(f'Loading model from {path}')
-    #     try:
-    #         if self.device == 'cpu':
-    #             self.load_state_dict(torch.load(path, map_location=self.device))
-    #         else:
-    #             self.load_state_dict(torch.load(path))
-    #             self.to(self.device)
-    #         print('Model loaded successfully')
-    #     except:
-    #         print('Error loading model')
     def load_weights(self, path = '/scratch/fd08/em8117/training_process/TPCNet/TPCNet_best_model.pth'):
         print(f'Loading model from {path}')
         try:
@@ -685,7 +654,8 @@ class bayeshi_model(nn.Module):
         BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
         return MSE(outputs, targets) + KLweight * BKLoss(self)
 
-    def fit(self, trainLoader, valLoader, trainingProcessPath, prefix, nEpochs = 100, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0.0001, maxKLweight = 0.01, maxKLepoch = 100):
+    def fit(self, trainLoader, valLoader, checkpoint_path, nEpochs = 100, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0.0001, maxKLweight = 0.01, maxKLepoch = 100):
+        
         self.to(self.device)
         criterion = self.lossFunction
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
@@ -696,8 +666,10 @@ class bayeshi_model(nn.Module):
         epochTimes = []
         bestValLoss = float('inf')
         #TODO: save with epoch number in name for interruped training, add handling to train if not at provided epochs
-        bestModelPath = trainingProcessPath / f'{prefix}_best_model_full.pth'
-
+        # Check if the provided path ends with .pth
+        if checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
         print('Training Model')
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
@@ -741,11 +713,11 @@ class bayeshi_model(nn.Module):
             # Lmao this saves every epoch instead of every run at the moment. Oops.
             if valLoss < bestValLoss:
                 bestValLoss = valLoss
-                torch.save(self.state_dict(), bestModelPath)
+                torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
-    def evaluate(self, loader, criterion):
+    def evaluate(self, loader, criterion=nn.MSELoss()):
         self.eval()
         totalLoss = 0.0
         with torch.no_grad():
@@ -761,10 +733,10 @@ class bayeshi_model(nn.Module):
     def predict(self, testLoader, numPredictions):
         self.eval()
         allPredictions = []
-        for _ in tqdm(range(numPredictions)):
+        for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
             predictions = []
             with torch.no_grad():
-                for inputs, _ in testLoader:
+                for inputs, *_ in testLoader:
                     inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
                     outputs = self(inputs)
                     predictions.append(outputs)

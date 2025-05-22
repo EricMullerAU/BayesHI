@@ -1,5 +1,5 @@
 import torch
-from .models import saury_model, tigress_model, tpcnet_all_phases
+from .models import saury_model, bayeshi_model, tpcnet_all_phases
 
 MODEL_CONFIGS = {
     'saury': {
