@@ -52,7 +52,7 @@ class earlyStopper:
             return False
 
 class saury_model(nn.Module):
-    def __init__(self, cnnBlocks, kernelNumber, kernelWidth, MHANumber, transformerNumber, priorMu, priorSigma, posEncType, device):
+    def __init__(self, cnnBlocks=1, kernelNumber=12, kernelWidth=51, MHANumber=4, transformerNumber=1, priorMu=0.0, priorSigma=0.01, posEncType='off', device='cpu'):
         super(saury_model, self).__init__()
         self.device = device
         # Convolutional layers
@@ -123,8 +123,9 @@ class saury_model(nn.Module):
         MSE = nn.MSELoss()
         BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
         return MSE(outputs, targets) + KLweight * BKLoss(self)
+    
 
-    def fit(self, trainLoader, valLoader, trainingProcessPath, prefix, nEpochs = 50, learningRate = 0.0005, schedulerStep = 15, stopperPatience = 5, stopperTol = 1e-4, maxKLweight = 0.01, maxKLepoch = 50):
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 50, learningRate = 0.0005, schedulerStep = 15, stopperPatience = 5, stopperTol = 1e-4, maxKLweight = 0.01, maxKLepoch = 50):
         self.to(self.device)
         criterion = self.lossFunction
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
@@ -134,7 +135,8 @@ class saury_model(nn.Module):
         valErrors = []
         epochTimes = []
         bestValLoss = float('inf')
-        bestModelPath = trainingProcessPath / f'{prefix}_best_model.pth'
+        if checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
 
         print('Training Model')
         print('Initial learning rate:', scheduler.get_last_lr())
@@ -145,7 +147,7 @@ class saury_model(nn.Module):
             startTime = time.time()
             self.train()
             runningLoss = 0.0
-            for inputs, targets in trainLoader:
+            for inputs, targets in train_loader:
                 inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -155,10 +157,10 @@ class saury_model(nn.Module):
                 optimizer.step()
                 runningLoss += loss.item()
 
-            trainLoss = runningLoss / len(trainLoader)
+            trainLoss = runningLoss / len(train_loader)
             trainErrors.append(trainLoss)
             trainedEpochs += 1
-            valLoss = self.evaluate(valLoader, nn.MSELoss())
+            valLoss = self.evaluate(val_loader, nn.MSELoss())
             valErrors.append(valLoss)
 
             if earlyStop.check(valLoss):
@@ -175,7 +177,7 @@ class saury_model(nn.Module):
 
             if valLoss < bestValLoss:
                 bestValLoss = valLoss
-                torch.save(self.state_dict(), bestModelPath)
+                torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
@@ -205,7 +207,7 @@ class saury_model(nn.Module):
             allPredictions.append(torch.cat(predictions, dim=0))
         return torch.stack(allPredictions, dim=0)
 
-    def load_weights(self, path = '/scratch/fd08/em8117/training_process/grid_search/peoff_c1_k12_w51_mha4_t1_e50_lr0.0005_s15_p5_tol1e-4_kl0.01/paperModelv2NoScalingKLannealing_best_model.pth'):
+    def load_weights(self, path = './weights/saury.pth'):
         print(f'Loading model from {path}')
         try:
             if self.device == 'cpu':
@@ -240,26 +242,27 @@ class TPCNetPositionalEncoding(nn.Module):
         return x
 
 class tpcnet_all_phases(nn.Module):
-    def __init__(self, num_output=2, in_channels=1, input_row=2, input_column=256, drop_out_rate=0., lpe=False, device='cpu'):
+    def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0., lpe=False, device='cpu'):
         super(tpcnet_all_phases, self).__init__()
 
         p = [0, 0] # padding
         d = [1, 1] # dilation
-        k = [1, 6] # kernael_size # 7 here
+        k = [1, 7] # kernel size for small layers
         s = [1, 1] # stride
         
         self.device = device
         
         self.num_features = 54
-        self.input_row    = input_row
-        self.in_channels  = in_channels
+        self.input_row = input_row
+        self.in_channels = in_channels
         self.input_column = input_column
 
-        kernel_wid = 33# 40 if input_column == 256 else 10
+        kernel_wid = 33
         
-        self.drop_rate   = drop_out_rate
+        self.drop_rate = drop_out_rate
         self.pos_encoder = TPCNetPositionalEncoding(num_features=self.num_features, sequence_len=6, d_model=9)
-        self.lpe = lpe
+        if lpe:
+            self.lpe = lpe
         self.pos_embedding = nn.Parameter(torch.randn(self.in_channels,self.input_row, self.input_column))
 
         # num_layer*8 + 8
@@ -452,7 +455,7 @@ class tpcnet_all_phases(nn.Module):
         MSE = nn.MSELoss()
         return MSE(outputs, targets)
 
-    def fit(self, trainLoader, valLoader, trainingProcessPath, prefix, nEpochs = 100, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0):
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 100, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0):
         self.to(self.device)
         criterion = self.lossFunction
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
@@ -463,7 +466,9 @@ class tpcnet_all_phases(nn.Module):
         epochTimes = []
         bestValLoss = float('inf')
         #TODO: save with epoch number in name for interruped training, add handling to train if not at provided epochs
-        bestModelPath = trainingProcessPath / f'{prefix}_best_model.pth'
+        # Check if the provided path ends with .pth
+        if checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
 
         print('Training Model')
         print('Initial learning rate:', scheduler.get_last_lr())
@@ -473,7 +478,7 @@ class tpcnet_all_phases(nn.Module):
             startTime = time.time()
             self.train()
             runningLoss = 0.0
-            for inputs, targets in tqdm(trainLoader, file=sys.stdout, desc='Training'):
+            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc='Training'):
                 inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -483,10 +488,10 @@ class tpcnet_all_phases(nn.Module):
                 optimizer.step()
                 runningLoss += loss.item()
 
-            trainLoss = runningLoss / len(trainLoader)
+            trainLoss = runningLoss / len(train_loader)
             trainErrors.append(trainLoss)
             trainedEpochs += 1
-            valLoss = self.evaluate(valLoader, nn.MSELoss())
+            valLoss = self.evaluate(val_loader, nn.MSELoss())
             valErrors.append(valLoss)
             
             if trainLoss == np.NaN or valLoss == np.NaN:
@@ -508,7 +513,7 @@ class tpcnet_all_phases(nn.Module):
             # Lmao this saves every epoch instead of every run at the moment. Oops.
             if valLoss < bestValLoss:
                 bestValLoss = valLoss
-                torch.save(self.state_dict(), bestModelPath)
+                torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
@@ -540,7 +545,7 @@ class tpcnet_all_phases(nn.Module):
             allPredictions.append(torch.cat(predictions, dim=0))
         return torch.stack(allPredictions, dim=0)
 
-    def load_weights(self, path = '/scratch/fd08/em8117/training_process/TPCNet/TPCNet_best_model.pth'):
+    def load_weights(self, path = './weights/tpcnet.pth'):
         print(f'Loading model from {path}')
         try:
             if self.device == 'cpu':
@@ -654,7 +659,7 @@ class bayeshi_model(nn.Module):
         BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
         return MSE(outputs, targets) + KLweight * BKLoss(self)
 
-    def fit(self, trainLoader, valLoader, checkpoint_path, nEpochs = 100, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0.0001, maxKLweight = 0.01, maxKLepoch = 100):
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 100, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0.0001, maxKLweight = 0.01, maxKLepoch = 100):
         
         self.to(self.device)
         criterion = self.lossFunction
@@ -679,7 +684,7 @@ class bayeshi_model(nn.Module):
             startTime = time.time()
             self.train()
             runningLoss = 0.0
-            for inputs, targets in trainLoader:
+            for inputs, targets in train_loader:
                 inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -692,10 +697,10 @@ class bayeshi_model(nn.Module):
                 optimizer.step()
                 runningLoss += loss.item()
 
-            trainLoss = runningLoss / len(trainLoader)
+            trainLoss = runningLoss / len(train_loader)
             trainErrors.append(trainLoss)
             trainedEpochs += 1
-            valLoss = self.evaluate(valLoader, nn.MSELoss())
+            valLoss = self.evaluate(val_loader, nn.MSELoss())
             valErrors.append(valLoss)
 
             if earlyStop.check(valLoss):
@@ -743,7 +748,7 @@ class bayeshi_model(nn.Module):
             allPredictions.append(torch.cat(predictions, dim=0))
         return torch.stack(allPredictions, dim=0)
 
-    def load_weights(self, path = '/scratch/fd08/em8117/training_process/TIGRESS_grid_search/TIGRESS_pesinusoidal_c1_k8_wone31_wtwo3_km2_ptoff_mha4_t1_e100_lr0.0001_s15_p20_tol1e-4_kl0.01/run1/TIGRESS_model_best_model_full.pth'):
+    def load_weights(self, path = './weights/tigress.pth'):
         print(f'Loading model from {path}')
         try:
             if self.device == 'cpu':
