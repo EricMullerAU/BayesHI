@@ -44,7 +44,8 @@ MODEL_CONFIGS = {
 
 def load_model(model_name):
     if model_name not in MODEL_CONFIGS:
-        raise ValueError(f"Model {model_name} not found.")
+        raise ValueError(f"Model {model_name} not found. Available models: {list(MODEL_CONFIGS.keys())}")
+
     
     config = MODEL_CONFIGS[model_name]
     model_class = config['class']

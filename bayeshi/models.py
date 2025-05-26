@@ -1,12 +1,16 @@
 import math
 import sys
 import time
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torchbnn as bnn
 from tqdm import tqdm
+from pathlib import Path
+
+root_dir = Path(__file__).resolve().parent
 
 class PositionalEncoding(nn.Module):
     """ Additive sinusoidal positional encoding. """
@@ -137,6 +141,9 @@ class saury_model(nn.Module):
         bestValLoss = float('inf')
         if checkpoint_path[-4:] != '.pth':
             raise ValueError("Checkpoint path must end with .pth")
+        # Also check that we wont overwrite the pretrained model
+        if checkpoint_path == root_dir / 'weights/saury.pth':
+            raise ValueError("Checkpoint path is the same as the pretrained model. Please change the checkpoint path to avoid overwriting the pretrained model.")
 
         print('Training Model')
         print('Initial learning rate:', scheduler.get_last_lr())
@@ -194,30 +201,27 @@ class saury_model(nn.Module):
         avgLoss = totalLoss / len(loader)
         return avgLoss
 
-    def predict(self, testLoader, numPredictions):
+    def predict(self, test_loader, numPredictions):
         self.eval()
         allPredictions = []
         for _ in tqdm(range(numPredictions), desc='Predicting', file=sys.stdout):
             predictions = []
             with torch.no_grad():
-                for inputs, _ in testLoader:
+                for inputs, *_ in test_loader:
                     inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
                     outputs = self(inputs)
                     predictions.append(outputs)
             allPredictions.append(torch.cat(predictions, dim=0))
         return torch.stack(allPredictions, dim=0)
 
-    def load_weights(self, path = './weights/saury.pth'):
+    def load_weights(self, path = root_dir / 'weights/saury.pth'):
         print(f'Loading model from {path}')
-        try:
-            if self.device == 'cpu':
-                self.load_state_dict(torch.load(path, map_location=self.device))
-            else:
-                self.load_state_dict(torch.load(path))
-                self.to(self.device)
-            print('Model loaded successfully')
-        except:
-            print('Error loading model')
+        if self.device == 'cpu':
+            self.load_state_dict(torch.load(path, map_location=self.device))
+        else:
+            self.load_state_dict(torch.load(path))
+            self.to(self.device)
+        print('Model loaded successfully')
 
 class TPCNetPositionalEncoding(nn.Module):
     def __init__(self, num_features, sequence_len=6, d_model=9):
@@ -229,10 +233,9 @@ class TPCNetPositionalEncoding(nn.Module):
         
         for index in range(0, sequence_len):  # position of word in seq
             for i in range(0, d_model, 2):
-                #print("i==",i)
                 div_term = math.exp(i * factor)
                 pe[0, index, i] = math.sin(index * div_term)
-                if(i+1 < d_model):
+                if (i+1 < d_model):
                     pe[0, index, i+1] = math.cos(index * div_term)
                 
         self.register_buffer('pe', pe)
@@ -240,6 +243,23 @@ class TPCNetPositionalEncoding(nn.Module):
         # x has shape [seq_len, bat_size, embed_dim]
         x = x + self.pe[:x.size(0), :]
         return x
+    
+class TPCNetCustomLoss(nn.Module):
+    def __init__(self, weights=[1., 1.]):
+        super(TPCNetCustomLoss, self).__init__()
+        self.weights = weights
+        self.mae = nn.L1Loss()
+        self.mse = nn.MSELoss()
+        self.npars = len(weights)
+
+    def forward(self, preds, targets):
+        total_loss = 0.
+        for i in range(self.npars):
+            loss_yi = self.mse(preds[:, i], targets[:, i])
+            total_loss += self.weights[i] * loss_yi
+        # End - for
+
+        return total_loss
 
 class tpcnet_all_phases(nn.Module):
     def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0., lpe=False, device='cpu'):
@@ -260,15 +280,17 @@ class tpcnet_all_phases(nn.Module):
         kernel_wid = 33
         
         self.drop_rate = drop_out_rate
+        self.lpe = lpe
         self.pos_encoder = TPCNetPositionalEncoding(num_features=self.num_features, sequence_len=6, d_model=9)
-        if lpe:
-            self.lpe = lpe
         self.pos_embedding = nn.Parameter(torch.randn(self.in_channels,self.input_row, self.input_column))
+        
+        self.loss_fcn = TPCNetCustomLoss(weights=[1., 1., 1., 1.])
 
         # num_layer*8 + 8
         
         # CNN layers (outchannels = outchannels-8)
-        kernelsize = (1,7) if (input_row < 2) else (2,3) 
+        kernelsize = (1,7) if (input_row < 2) else (2,7)
+        
         self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=72, kernel_size=kernelsize, stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn1   = nn.BatchNorm2d(72)
         Hout, Wout = self.get_output_size(72, input_column, k=kernelsize, s=s, p=p, d=d)
@@ -310,14 +332,14 @@ class tpcnet_all_phases(nn.Module):
         # print('>>> Conv2: ', Hout, Wout)
 
 
-        self.conv9 = nn.Conv2d(in_channels=8, out_channels=4,  kernel_size=kernelsize, stride=1, padding=0, bias=True, padding_mode='zeros')
-        self.bn9 = nn.BatchNorm2d(4)
-        Hout, Wout = self.get_output_size(4, Wout, k = kernelsize, s=s, p=p, d=d)
-        # print('>>> Conv2: ', Hout, Wout)
+        # self.conv9 = nn.Conv2d(in_channels=8, out_channels=4,  kernel_size=kernelsize, stride=1, padding=0, bias=True, padding_mode='zeros')
+        # self.bn9 = nn.BatchNorm2d(4)
+        # Hout, Wout = self.get_output_size(4, Wout, k = kernelsize, s=s, p=p, d=d)
+        # # print('>>> Conv2: ', Hout, Wout)
 
-        self.conv10 = nn.Conv2d(in_channels=4, out_channels=2,  kernel_size=(1,kernel_wid), stride=1, padding=0, bias=True, padding_mode='zeros')
-        self.bn10 = nn.BatchNorm2d(2)
-        Hout, Wout = self.get_output_size(2, Wout, k = (1,kernel_wid), s=s, p=p, d=d)
+        # self.conv10 = nn.Conv2d(in_channels=4, out_channels=2,  kernel_size=(1,kernel_wid), stride=1, padding=0, bias=True, padding_mode='zeros')
+        # self.bn10 = nn.BatchNorm2d(2)
+        # Hout, Wout = self.get_output_size(2, Wout, k = (1,kernel_wid), s=s, p=p, d=d)
         # print('>>> Conv2: ', Hout, Wout)
 
         # self.conv11 = nn.Conv2d(in_channels=8, out_channels=4,  kernel_size=(1,3), stride=1, padding=0, bias=True, padding_mode='zeros')
@@ -358,11 +380,8 @@ class tpcnet_all_phases(nn.Module):
                 m.bias.data.zero_()
 
     def forward(self, x):
-        # print(1, x.size())
         if self.lpe:
-            # x =  x + self.pos_embedding
-            x = self.pos_encoder(x)
-            # print(1, 'lpe', x.size())
+            x =  x + self.pos_embedding
         
         x = self.conv1(x)
         x = self.bn1(x)
@@ -404,14 +423,14 @@ class tpcnet_all_phases(nn.Module):
         x = F.relu(x)
         # print(x.size())
 
-        x = self.conv9(x)
-        x = self.bn9(x)
-        x = F.relu(x)
-        # print(x.size())
+        # x = self.conv9(x)
+        # x = self.bn9(x)
+        # x = F.relu(x)
+        # # print(x.size())
 
-        x = self.conv10(x)
-        x = self.bn10(x)
-        x = F.relu(x)
+        # x = self.conv10(x)
+        # x = self.bn10(x)
+        # x = F.relu(x)
         # print(10, x.size())
         #x = torch.squeeze(x)
         #x = x.reshape(-1, x.shape[2], x.shape[1])
@@ -432,18 +451,14 @@ class tpcnet_all_phases(nn.Module):
         x = x.reshape(x.shape[0], -1, 9)
         # print('x reshape (before trans): ', x.size())
         
-        # # Add sinusoidal positional encoding
-        # if not self.lpe:
-        #     x = self.pos_encoder(x)
+        # Add positional encoding to embedding matrix
+        x = self.pos_encoder(x)
         
-        # Transformer MODEL
+        # Transformer
         x = self.transformer(x)
-        # print('x after trans: ', x.size())
         x = self.flatten(x)
-        # print('x after flatten: ', x.size())
     
         x = self.decoder(x)
-        # print('x output: ', x.size())
         return x
 
     def get_output_size(self, Hin, Win, k, s=[1, 1], p=[0, 0], d=[1, 1]):
@@ -451,15 +466,11 @@ class tpcnet_all_phases(nn.Module):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
 
-    def lossFunction(self, outputs, targets):
-        MSE = nn.MSELoss()
-        return MSE(outputs, targets)
-
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 100, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0):
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 128, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0):
         self.to(self.device)
-        criterion = self.lossFunction
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        criterion = self.loss_fcn
+        optimizer = optim.SGD(self.parameters(), lr=learningRate)
+        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[nEpochs//2], gamma=0.1, last_epoch=-1)
         earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
         trainErrors = []
         valErrors = []
@@ -469,6 +480,9 @@ class tpcnet_all_phases(nn.Module):
         # Check if the provided path ends with .pth
         if checkpoint_path[-4:] != '.pth':
             raise ValueError("Checkpoint path must end with .pth")
+        # Also check that we wont overwrite the pretrained model
+        if checkpoint_path == root_dir / 'weights/tpcnet.pth':
+            raise ValueError("Checkpoint path is the same as the pretrained model. Please change the checkpoint path to avoid overwriting the pretrained model.")
 
         print('Training Model')
         print('Initial learning rate:', scheduler.get_last_lr())
@@ -478,7 +492,7 @@ class tpcnet_all_phases(nn.Module):
             startTime = time.time()
             self.train()
             runningLoss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc='Training'):
+            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
                 inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -503,7 +517,7 @@ class tpcnet_all_phases(nn.Module):
                 break
 
             lastLR = scheduler.get_last_lr()
-            scheduler.step(valLoss)
+            scheduler.step()
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
@@ -530,7 +544,7 @@ class tpcnet_all_phases(nn.Module):
         avgLoss = totalLoss / len(loader)
         return avgLoss
 
-    def predict(self, testLoader, numPredictions):
+    def predict(self, test_loader, numPredictions):
         if numPredictions  > 1:
             print('Warning: numPredictions > 1, but this model is not Bayesian, so all predictions will be the same. Re-run with numPredictions = 1 for faster inference.')
         self.eval()
@@ -538,24 +552,21 @@ class tpcnet_all_phases(nn.Module):
         for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
             predictions = []
             with torch.no_grad():
-                for inputs, *_ in testLoader:
+                for inputs, *_ in test_loader:
                     inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
                     outputs = self(inputs)
                     predictions.append(outputs)
             allPredictions.append(torch.cat(predictions, dim=0))
         return torch.stack(allPredictions, dim=0)
 
-    def load_weights(self, path = './weights/tpcnet.pth'):
+    def load_weights(self, path = root_dir / 'weights/tpcnet.pth'):
         print(f'Loading model from {path}')
-        try:
-            if self.device == 'cpu':
-                self.load_state_dict(torch.load(path, map_location=self.device))
-            else:
-                self.load_state_dict(torch.load(path))
-                self.to(self.device)
-            print('Model loaded successfully')
-        except:
-            print('Error loading model')
+        if self.device == 'cpu':
+            self.load_state_dict(torch.load(path, map_location=self.device))
+        else:
+            self.load_state_dict(torch.load(path))
+            self.to(self.device)
+        print('Model loaded successfully')
     
 
 class bayeshi_model(nn.Module):
@@ -659,13 +670,14 @@ class bayeshi_model(nn.Module):
         BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
         return MSE(outputs, targets) + KLweight * BKLoss(self)
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 100, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0.0001, maxKLweight = 0.01, maxKLepoch = 100):
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 100, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0.0001, maxKLweight = 0.01, maxKLepoch = 100, early_stop = False):
         
         self.to(self.device)
         criterion = self.lossFunction
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        if early_stop:
+            earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -674,6 +686,9 @@ class bayeshi_model(nn.Module):
         # Check if the provided path ends with .pth
         if checkpoint_path[-4:] != '.pth':
             raise ValueError("Checkpoint path must end with .pth")
+        # Also check that we wont overwrite the pretrained model
+        if checkpoint_path == root_dir / 'weights/tigress.pth':
+            raise ValueError("Checkpoint path is the same as the pretrained model. Please change the checkpoint path to avoid overwriting the pretrained model.")
         
         print('Training Model')
         print('Initial learning rate:', scheduler.get_last_lr())
@@ -703,7 +718,7 @@ class bayeshi_model(nn.Module):
             valLoss = self.evaluate(val_loader, nn.MSELoss())
             valErrors.append(valLoss)
 
-            if earlyStop.check(valLoss):
+            if early_stop and earlyStop.check(valLoss):
                 print(f'Early stopping at epoch {epoch + 1}')
                 break
 
@@ -735,27 +750,24 @@ class bayeshi_model(nn.Module):
         avgLoss = totalLoss / len(loader)
         return avgLoss
 
-    def predict(self, testLoader, numPredictions):
+    def predict(self, test_loader, numPredictions):
         self.eval()
         allPredictions = []
         for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
             predictions = []
             with torch.no_grad():
-                for inputs, *_ in testLoader:
+                for inputs, *_ in test_loader:
                     inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
                     outputs = self(inputs)
                     predictions.append(outputs)
             allPredictions.append(torch.cat(predictions, dim=0))
         return torch.stack(allPredictions, dim=0)
 
-    def load_weights(self, path = './weights/tigress.pth'):
+    def load_weights(self, path = root_dir / 'weights/tigress.pth'):
         print(f'Loading model from {path}')
-        try:
-            if self.device == 'cpu':
-                self.load_state_dict(torch.load(path, map_location=self.device))
-            else:
-                self.load_state_dict(torch.load(path))
-                self.to(self.device)
-            print('Model loaded successfully')
-        except:
-            print('Error loading model')
+        if self.device == 'cpu':
+            self.load_state_dict(torch.load(path, map_location=self.device))
+        else:
+            self.load_state_dict(torch.load(path))
+            self.to(self.device)
+        print('Model loaded successfully')

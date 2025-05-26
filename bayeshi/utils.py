@@ -34,19 +34,34 @@ def generate_spectra(num_spectra=100, num_channels=256, max_components=3, noise_
     ])
     return spectra.astype(np.float32) # Convert to float32 for PyTorch compatibility
 
+import numpy as np
+import matplotlib.pyplot as plt
+
 def plot_spectrum(data, predictions, index):
     spectrum = data[index].T
     maximum = np.max(spectrum)
 
-    avg_prediction = np.mean(predictions, axis = 0)
-    std_prediction = np.std(predictions, axis = 0) 
-    
+    if predictions.shape[0] == 1:
+        avg_prediction = predictions[0]
+        show_uncertainty = False
+    else:
+        avg_prediction = np.mean(predictions, axis=0)
+        std_prediction = np.std(predictions, axis=0)
+        show_uncertainty = True
+
     plt.figure(figsize=(10,6))
     plt.plot(spectrum)
     plt.xlabel('Channel')
     plt.ylabel(r'$T_B$ [K]')
-    plt.text(0, 0.9*maximum, fr'$f_\text{{CNM}} = {avg_prediction[index,0]:.2f} \pm {std_prediction[index,0]:.2f}$')
-    plt.text(0, 0.8*maximum, fr'$f_\text{{UNM}} = {avg_prediction[index,1]:.2f} \pm {std_prediction[index,1]:.2f}$')
-    plt.text(0, 0.7*maximum, fr'$f_\text{{WNM}} = {avg_prediction[index,2]:.2f} \pm {std_prediction[index,2]:.2f}$')
-    plt.text(0, 0.6*maximum, fr'$\mathcal{{R}}_\text{{HI}} = {avg_prediction[index,3]:.2f} \pm {std_prediction[index,3]:.2f}$')
+    
+    if show_uncertainty:
+        plt.text(0, 0.9*maximum, fr'$f_\text{{CNM}} = {avg_prediction[index,0]:.2f} \pm {std_prediction[index,0]:.2f}$')
+        plt.text(0, 0.8*maximum, fr'$f_\text{{UNM}} = {avg_prediction[index,1]:.2f} \pm {std_prediction[index,1]:.2f}$')
+        plt.text(0, 0.7*maximum, fr'$f_\text{{WNM}} = {avg_prediction[index,2]:.2f} \pm {std_prediction[index,2]:.2f}$')
+        plt.text(0, 0.6*maximum, fr'$\mathcal{{R}}_\text{{HI}} = {avg_prediction[index,3]:.2f} \pm {std_prediction[index,3]:.2f}$')
+    else:
+        plt.text(0, 0.9*maximum, fr'$f_\text{{CNM}} = {avg_prediction[index,0]:.2f}$')
+        plt.text(0, 0.8*maximum, fr'$f_\text{{UNM}} = {avg_prediction[index,1]:.2f}$')
+        plt.text(0, 0.7*maximum, fr'$f_\text{{WNM}} = {avg_prediction[index,2]:.2f}$')
+        plt.text(0, 0.6*maximum, fr'$\mathcal{{R}}_\text{{HI}} = {avg_prediction[index,3]:.2f}$')
     plt.show()
