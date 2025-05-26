@@ -13,29 +13,58 @@ from pathlib import Path
 root_dir = Path(__file__).resolve().parent
 
 class PositionalEncoding(nn.Module):
-    """ Additive sinusoidal positional encoding. """
-    def __init__(self, d_model, max_len=256):
-        super(PositionalEncoding, self).__init__()
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe.unsqueeze(0))  # (1, max_len, d_model)
+    def __init__(self, d_model: int, dropout: float = 0.0, max_len: int = 256):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
 
-    def forward(self, x):
-        return x + self.pe[:, :x.size(1), :].to(x.device)
+        position = torch.arange(max_len).unsqueeze(1)
+        # Note that we use different division terms for sine and cosine to handle the case where d_model is odd.
+        sin_div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        cos_div_term = torch.exp(torch.arange(1, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * sin_div_term)
+        pe[:, 0, 1::2] = torch.cos(position * cos_div_term)
+        self.register_buffer('pe', pe, persistent=False)
 
-class StochasticPositionalEncoding(nn.Module):
-    """ Stochastic positional encoding (SPE) with Gaussian noise. """
-    def __init__(self, d_model, max_len=256, std=0.02):
-        super(StochasticPositionalEncoding, self).__init__()
-        self.std = std
-        self.pe = nn.Parameter(torch.randn(max_len, d_model) * std)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Arguments:
+            x: Tensor, shape ``[seq_len, batch_size, embedding_dim]``
+        """
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
+    
+class SinusoidalPositionalEncoding(nn.Module):
+    '''
+    Sinusoidal positional encoding from TPCNet.
+    
+    Simple encoding that uses an additive sine function to encode the position of each channel of the input.
+    '''
+    def __init__(self, dropout: float = 0.0, max_len: int = 256):
+        super(SinusoidalPositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        pe = torch.zeros(1, 1, 1, max_len)
+        pe[:, :, :, :] = torch.sin(torch.arange(max_len).float())
+        self.register_buffer('pe', pe, persistent=False)
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Arguments:
+            x: Tensor, shape ``[seq_len, batch_size, embedding_dim]``
+        """
+        x = x + self.pe[:x.size(3)]
+        return self.dropout(x)
 
-    def forward(self, x):
-        noise = torch.randn_like(self.pe[:x.size(1), :]) * self.std
-        return x + (self.pe[:x.size(1), :] + noise).unsqueeze(0).to(x.device)
+# class StochasticPositionalEncoding(nn.Module):
+#     """ Stochastic positional encoding (SPE) with Gaussian noise. """
+#     def __init__(self, d_model, max_len=256, std=0.02):
+#         super(StochasticPositionalEncoding, self).__init__()
+#         self.std = std
+#         self.pe = nn.Parameter(torch.randn(max_len, d_model) * std)
+
+#     def forward(self, x):
+#         noise = torch.randn_like(self.pe[:x.size(1), :]) * self.std
+#         return x + (self.pe[:x.size(1), :] + noise).unsqueeze(0).to(x.device)
 
 class earlyStopper:
     def __init__(self, patience, tol):
@@ -98,7 +127,7 @@ class saury_model(nn.Module):
         else:
             self.positional_encoding = None
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=kernelNumber, nhead=MHANumber, batch_first=True),
+            nn.TransformerEncoderLayer(d_model=kernelNumber, nhead=MHANumber, batch_first=False),
             num_layers=transformerNumber
         )
         self.flatten = nn.Flatten()
@@ -223,26 +252,26 @@ class saury_model(nn.Module):
             self.to(self.device)
         print('Model loaded successfully')
 
-class TPCNetPositionalEncoding(nn.Module):
-    def __init__(self, num_features, sequence_len=6, d_model=9):
-        super(TPCNetPositionalEncoding, self).__init__()
-        self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+# class TPCNetPositionalEncoding(nn.Module):
+#     def __init__(self, num_features, sequence_len=6, d_model=9):
+#         super(TPCNetPositionalEncoding, self).__init__()
+#         self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
         
-        pe     = torch.zeros((1, sequence_len, d_model), dtype=torch.float32).to(self.device)
-        factor = -math.log(10000.0) / d_model  # outs loop
+#         pe     = torch.zeros((1, sequence_len, d_model), dtype=torch.float32).to(self.device)
+#         factor = -math.log(10000.0) / d_model  # outs loop
         
-        for index in range(0, sequence_len):  # position of word in seq
-            for i in range(0, d_model, 2):
-                div_term = math.exp(i * factor)
-                pe[0, index, i] = math.sin(index * div_term)
-                if (i+1 < d_model):
-                    pe[0, index, i+1] = math.cos(index * div_term)
+#         for index in range(0, sequence_len):  # position of word in seq
+#             for i in range(0, d_model, 2):
+#                 div_term = math.exp(i * factor)
+#                 pe[0, index, i] = math.sin(index * div_term)
+#                 if (i+1 < d_model):
+#                     pe[0, index, i+1] = math.cos(index * div_term)
                 
-        self.register_buffer('pe', pe)
-    def forward(self, x):
-        # x has shape [seq_len, bat_size, embed_dim]
-        x = x + self.pe[:x.size(0), :]
-        return x
+#         self.register_buffer('pe', pe)
+#     def forward(self, x):
+#         # x has shape [seq_len, bat_size, embed_dim]
+#         x = x + self.pe[:x.size(0), :]
+#         return x
     
 class TPCNetCustomLoss(nn.Module):
     def __init__(self, weights=[1., 1.]):
@@ -262,7 +291,7 @@ class TPCNetCustomLoss(nn.Module):
         return total_loss
 
 class tpcnet_all_phases(nn.Module):
-    def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0., lpe=False, device='cpu'):
+    def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0., device='cpu'):
         super(tpcnet_all_phases, self).__init__()
 
         p = [0, 0] # padding
@@ -279,10 +308,10 @@ class tpcnet_all_phases(nn.Module):
 
         kernel_wid = 33
         
-        self.drop_rate = drop_out_rate
-        self.lpe = lpe
-        self.pos_encoder = TPCNetPositionalEncoding(num_features=self.num_features, sequence_len=6, d_model=9)
-        self.pos_embedding = nn.Parameter(torch.randn(self.in_channels,self.input_row, self.input_column))
+        self.drop_out_rate = drop_out_rate
+        # self.lpe = lpe
+        self.emb_pos_encoder = PositionalEncoding(dropout = self.drop_out_rate, d_model=9, max_len=self.input_column)
+        self.spec_pos_encoder = SinusoidalPositionalEncoding(dropout=self.drop_out_rate, max_len=self.input_column)
         
         self.loss_fcn = TPCNetCustomLoss(weights=[1., 1., 1., 1.])
 
@@ -360,7 +389,7 @@ class tpcnet_all_phases(nn.Module):
                 d_model=9,
                 nhead=3,
                 dim_feedforward=36,
-                dropout=self.drop_rate,
+                dropout=self.drop_out_rate,
                 batch_first=True,
             ),
             num_layers=4
@@ -380,8 +409,7 @@ class tpcnet_all_phases(nn.Module):
                 m.bias.data.zero_()
 
     def forward(self, x):
-        if self.lpe:
-            x =  x + self.pos_embedding
+        x =  self.spec_pos_encoder(x)
         
         x = self.conv1(x)
         x = self.bn1(x)
@@ -452,7 +480,7 @@ class tpcnet_all_phases(nn.Module):
         # print('x reshape (before trans): ', x.size())
         
         # Add positional encoding to embedding matrix
-        x = self.pos_encoder(x)
+        x = self.emb_pos_encoder(x)
         
         # Transformer
         x = self.transformer(x)
@@ -466,12 +494,12 @@ class tpcnet_all_phases(nn.Module):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 128, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0):
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 60, learningRate = 5e-3):
         self.to(self.device)
         criterion = self.loss_fcn
-        optimizer = optim.SGD(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[nEpochs//2], gamma=0.1, last_epoch=-1)
-        earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[nEpochs//2], gamma=0.1, last_epoch=-1)
+        # earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -485,7 +513,7 @@ class tpcnet_all_phases(nn.Module):
             raise ValueError("Checkpoint path is the same as the pretrained model. Please change the checkpoint path to avoid overwriting the pretrained model.")
 
         print('Training Model')
-        print('Initial learning rate:', scheduler.get_last_lr())
+        # print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
         for epoch in range(nEpochs):
@@ -512,14 +540,14 @@ class tpcnet_all_phases(nn.Module):
                 print('NaN loss detected, stopping training')
                 break
             
-            if earlyStop.check(valLoss):
-                print(f'Early stopping at epoch {epoch + 1}')
-                break
+            # if earlyStop.check(valLoss):
+            #     print(f'Early stopping at epoch {epoch + 1}')
+            #     break
 
-            lastLR = scheduler.get_last_lr()
-            scheduler.step()
-            if lastLR != scheduler.get_last_lr():
-                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+            # lastLR = scheduler.get_last_lr()
+            # scheduler.step()
+            # if lastLR != scheduler.get_last_lr():
+            #     print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
             print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
