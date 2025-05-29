@@ -55,16 +55,16 @@ class SinusoidalPositionalEncoding(nn.Module):
         x = x + self.pe[:x.size(3)]
         return self.dropout(x)
 
-# class StochasticPositionalEncoding(nn.Module):
-#     """ Stochastic positional encoding (SPE) with Gaussian noise. """
-#     def __init__(self, d_model, max_len=256, std=0.02):
-#         super(StochasticPositionalEncoding, self).__init__()
-#         self.std = std
-#         self.pe = nn.Parameter(torch.randn(max_len, d_model) * std)
+class StochasticPositionalEncoding(nn.Module):
+    """ Stochastic positional encoding (SPE) with Gaussian noise. """
+    def __init__(self, d_model, max_len=256, std=0.02):
+        super(StochasticPositionalEncoding, self).__init__()
+        self.std = std
+        self.pe = nn.Parameter(torch.randn(max_len, d_model) * std)
 
-#     def forward(self, x):
-#         noise = torch.randn_like(self.pe[:x.size(1), :]) * self.std
-#         return x + (self.pe[:x.size(1), :] + noise).unsqueeze(0).to(x.device)
+    def forward(self, x):
+        noise = torch.randn_like(self.pe[:x.size(1), :]) * self.std
+        return x + (self.pe[:x.size(1), :] + noise).unsqueeze(0).to(x.device)
 
 class earlyStopper:
     def __init__(self, patience, tol):
@@ -144,7 +144,8 @@ class saury_model(nn.Module):
         x = self.transformer(x)
         x = self.flatten(x)
         x = self.decoder(x)
-        x = torch.cat((F.softmax(x[:, :3], dim=1), torch.relu(x[:, 3]).unsqueeze(1)), dim=1)
+        x = x / 100
+        x = torch.cat((F.softmax(x[:, :3], dim=1), torch.clamp(x[:, 3], min=1).unsqueeze(1)), dim=1)
         return x
 
     def get_output_size(self, Hin, Win, k, s=[1, 1], p=[0, 0], d=[1, 1]):
@@ -251,27 +252,6 @@ class saury_model(nn.Module):
             self.load_state_dict(torch.load(path))
             self.to(self.device)
         print('Model loaded successfully')
-
-# class TPCNetPositionalEncoding(nn.Module):
-#     def __init__(self, num_features, sequence_len=6, d_model=9):
-#         super(TPCNetPositionalEncoding, self).__init__()
-#         self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-        
-#         pe     = torch.zeros((1, sequence_len, d_model), dtype=torch.float32).to(self.device)
-#         factor = -math.log(10000.0) / d_model  # outs loop
-        
-#         for index in range(0, sequence_len):  # position of word in seq
-#             for i in range(0, d_model, 2):
-#                 div_term = math.exp(i * factor)
-#                 pe[0, index, i] = math.sin(index * div_term)
-#                 if (i+1 < d_model):
-#                     pe[0, index, i+1] = math.cos(index * div_term)
-                
-#         self.register_buffer('pe', pe)
-#     def forward(self, x):
-#         # x has shape [seq_len, bat_size, embed_dim]
-#         x = x + self.pe[:x.size(0), :]
-#         return x
     
 class TPCNetCustomLoss(nn.Module):
     def __init__(self, weights=[1., 1.]):
@@ -520,17 +500,22 @@ class tpcnet_all_phases(nn.Module):
             startTime = time.time()
             self.train()
             runningLoss = 0.0
+            mse_running_loss = 0.0
             for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
                 inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
                 loss = criterion(outputs, targets)
+                # Calculate MSE loss to compare with custom loss
+                mse_loss = nn.MSELoss()(outputs, targets)
                 loss.backward()
                 optimizer.step()
                 runningLoss += loss.item()
+                mse_running_loss += mse_loss.item()
 
             trainLoss = runningLoss / len(train_loader)
+            mse_trainLoss = mse_running_loss / len(train_loader)
             trainErrors.append(trainLoss)
             trainedEpochs += 1
             valLoss = self.evaluate(val_loader, nn.MSELoss())
@@ -549,7 +534,7 @@ class tpcnet_all_phases(nn.Module):
             # if lastLR != scheduler.get_last_lr():
             #     print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, MSE Train Loss: {mse_trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             # Lmao this saves every epoch instead of every run at the moment. Oops.
@@ -595,15 +580,17 @@ class tpcnet_all_phases(nn.Module):
             self.load_state_dict(torch.load(path))
             self.to(self.device)
         print('Model loaded successfully')
-    
 
 class bayeshi_model(nn.Module):
-    def __init__(self, cnnBlocks, kernelNumber, kernelWidth1, kernelWidth2, kernelMult, pooling, MHANumber, transformerNumber, priorMu, priorSigma, posEncType, device):
-        super(bayeshi_model, self).__init__()
+    def __init__(self, cnnBlocks: int = 1, kernelNumber: int = 8, kernelWidth1: int = 31, kernelWidth2: int = 3, kernelMult: float = 2.0, pooling: str = 'off', MHANumber: int = 4, transformerNumber: int = 1, priorMu: float = 0.0, priorSigma: float = 0.01, posEncType: str = 'sinusoidal', device: str = 'cpu'):
+        super().__init__()
         self.device = device
+        self.pooling = pooling
+        if pooling not in ['max', 'avg', 'off']:
+            raise ValueError("Pooling must be 'max', 'avg', or 'off'.")
         # Convolutional layers
         self.conv_layers = nn.ModuleList()
-        self.pool_layers = nn.ModuleList()
+        # self.pool_layers = nn.ModuleList()
         in_channels = 1
         Hout, Wout = 1, 256  # Initial input size
         for i in range(cnnBlocks):
@@ -618,6 +605,7 @@ class bayeshi_model(nn.Module):
                 out_channels = kernelNumber
             else:
                 out_channels = int(in_channels * kernelMult)
+            print(f'Convolutional block {i + 1}: in_channels={in_channels}, out_channels={out_channels}, kernelWidth1={kernelWidth1}, kernelWidth2={kernelWidth2}, pooling={pooling}')
             self.conv_layers.append(
             bnn.BayesConv2d(
                 prior_mu=priorMu,
@@ -628,9 +616,9 @@ class bayeshi_model(nn.Module):
                 padding=(0, 0)
             )
             )
-            if pooling == 'max':
+            if self.pooling == 'max':
                 self.conv_layers.append(nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2)))
-            elif pooling == 'avg':
+            elif self.pooling == 'avg':
                 self.conv_layers.append(nn.AvgPool2d(kernel_size=(1, 2), stride=(1, 2)))
             self.conv_layers.append(
             bnn.BayesConv2d(
@@ -642,49 +630,69 @@ class bayeshi_model(nn.Module):
                 padding=(0, 0)
             )
             )
-            if pooling == 'max':
+            if self.pooling == 'max':
                 self.conv_layers.append(nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2)))
-            elif pooling == 'avg':
+            elif self.pooling == 'avg':
                 self.conv_layers.append(nn.AvgPool2d(kernel_size=(1, 2), stride=(1, 2)))
             
             in_channels = out_channels
             Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernelWidth1], s=[1, 1], p=[0, 0], d=[1, 1])
-            if pooling != 'off':
+            if self.pooling != 'off':
                 Wout = Wout // 2
             Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernelWidth2], s=[1, 1], p=[0, 0], d=[1, 1])
-            if pooling != 'off':
+            if self.pooling != 'off':
                 Wout = Wout // 2
             
         if posEncType == 'sinusoidal':
-            self.positional_encoding = PositionalEncoding(d_model=kernelNumber)
+            self.positional_encoding = PositionalEncoding(d_model = out_channels)
         elif posEncType == 'stochastic':
-            self.positional_encoding = StochasticPositionalEncoding(d_model=kernelNumber)
+            self.positional_encoding = StochasticPositionalEncoding(d_model = out_channels)
         else:
             self.positional_encoding = None
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=kernelNumber, nhead=MHANumber, batch_first=True),
+            nn.TransformerEncoderLayer(d_model = out_channels, nhead=MHANumber, batch_first=True),
             num_layers=transformerNumber
         )
         self.flatten = nn.Flatten()
         self.decoder = bnn.BayesLinear(prior_mu=priorMu, prior_sigma=priorSigma,
-                                        in_features=kernelNumber * Wout, out_features=4)
+                                        in_features=out_channels * Wout, out_features=4)
+        
+        # Initialise weights using Kaiming normal initialization
+        # Note this DOES NOT initialise the transformer layers
+        for layer in self.conv_layers:
+            if isinstance(layer, bnn.BayesConv2d):
+                nn.init.kaiming_normal_(layer.weight_mu)
+                if layer.bias is not None:
+                    nn.init.zeros_(layer.bias_mu)
+        
+        nn.init.kaiming_normal_(self.decoder.weight_mu)
+        if self.decoder.bias_mu is not None:
+            nn.init.zeros_(self.decoder.bias_mu)
+        
 
     def forward(self, x):
         for layer in self.conv_layers:
             if isinstance(layer, bnn.BayesConv2d):
                 # Apply convolutional layer
                 x = layer(x)
-                x = F.relu(x)
+                if self.pooling == 'off':
+                    x = F.relu(x)
             elif isinstance(layer, nn.MaxPool2d) or isinstance(conv, nn.AvgPool2d):
-                # Apply pooling layer and then ReLU
+                # Apply pooling layer and then ReLU activation just for a bit more efficiency (can also do ReLu then pooling but this means half the activations are not used)
                 x = layer(x)
+                x = F.relu(x)
         # Once finished with the convolutions pass to the transformer
-        x = x.squeeze(2).permute(0, 2, 1)  # (batch, width, channels)
+        # x = x.squeeze(2).permute(0, 2, 1)  # change from (batch, channels, height, width) to (batch, width, channels)
+        x = x.squeeze(2).permute(2, 0, 1)  # change from (batch, channels, height, width) to (width, batch, channels)
         if self.positional_encoding is not None:
             x = self.positional_encoding(x)
         x = self.transformer(x)
+        # Now reshape back to (batch, width * channels)
+        x = x.permute(1, 0, 2)  # change from (width, batch, channels) to (batch, width, channels)
+        # and flatten
         x = self.flatten(x)
         x = self.decoder(x)
+        x = x / 100 # this fixes the issue of exploding values ruining the softmax, likely caused by the new Kaiming initialisation.
         x = torch.cat((F.softmax(x[:, :3], dim=1), torch.clamp(x[:, 3], min=1).unsqueeze(1)), dim=1)
         return x
 
@@ -698,9 +706,10 @@ class bayeshi_model(nn.Module):
         BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
         return MSE(outputs, targets) + KLweight * BKLoss(self)
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 100, learningRate = 0.0001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0.0001, maxKLweight = 0.01, maxKLepoch = 100, early_stop = False):
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 100, learningRate = 0.001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0.0001, maxKLweight = 0.01, maxKLepoch = 100, early_stop = False):
         
         self.to(self.device)
+        # Track a single set of weights through the training process
         criterion = self.lossFunction
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
@@ -722,12 +731,19 @@ class bayeshi_model(nn.Module):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
+        # import pdb
+        for p in self.parameters():
+            p.requires_grad = True  # Ensure all parameters are trainable
         for epoch in range(nEpochs):
+            self.train()
             KLweight = maxKLweight * min(1, epoch / maxKLepoch)
             startTime = time.time()
-            self.train()
             runningLoss = 0.0
-            for inputs, targets in train_loader:
+            # asdf = 0
+            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+                # asdf += 1
+                # if asdf > 10:
+                #     break
                 inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -735,17 +751,23 @@ class bayeshi_model(nn.Module):
                 # print('Outputs:', outputs[0])
                 # print('Targets:', targets[0])
                 loss = criterion(outputs, targets, KLweight)
+                # print some gradients for debugging
+                # print('Gradients:', [p.grad for p in self.parameters() if p.grad is not None][:5])  # Print first 5 gradients
                 # print('Loss:', loss.item())
                 loss.backward()
                 optimizer.step()
                 runningLoss += loss.item()
+                # pdb.set_trace()
+
+            # for i, p in enumerate(self.parameters()):
+            #     print(i, p.sum())
 
             trainLoss = runningLoss / len(train_loader)
             trainErrors.append(trainLoss)
             trainedEpochs += 1
-            valLoss = self.evaluate(val_loader, nn.MSELoss())
+            valLoss = self.evaluate(val_loader)
             valErrors.append(valLoss)
-
+    
             if early_stop and earlyStop.check(valLoss):
                 print(f'Early stopping at epoch {epoch + 1}')
                 break
@@ -765,7 +787,8 @@ class bayeshi_model(nn.Module):
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
-    def evaluate(self, loader, criterion=nn.MSELoss()):
+    def evaluate(self, loader, criterion=None):
+        criterion = nn.MSELoss() if criterion is None else criterion
         self.eval()
         totalLoss = 0.0
         with torch.no_grad():
@@ -799,3 +822,353 @@ class bayeshi_model(nn.Module):
             self.load_state_dict(torch.load(path))
             self.to(self.device)
         print('Model loaded successfully')
+
+class rnn_model(nn.Module):
+    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4,
+                 output_dim=4, device='cpu'):
+        super().__init__()
+        self.device = torch.device(device)
+
+        # Embed scalar inputs to d_model dimension
+        self.embedding = nn.Linear(input_dim, d_model)
+
+        # Positional embeddings and CLS token
+        self.pos_embedding = nn.Parameter(torch.randn(1, seq_len + 1, d_model, device=self.device))
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model, device=self.device))
+
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        # Output head
+        self.head = nn.Linear(d_model, output_dim)
+
+        # Move submodules to device
+        self.to(self.device)
+
+    def forward(self, x):
+        """
+        x: Tensor of shape (batch_size, seq_len) = (B, 1, 256)
+        """
+        x = x.to(self.device)
+
+        B, H, L = x.shape
+        
+        assert H == 1 and L == 256, f"Input tensor must have shape (B, 1, 256), got {x.shape}"
+        
+        x = x.view(B, L).unsqueeze(-1) # (B, 256, 1)
+
+        x = self.embedding(x)  # (B, 256, d_model)
+
+        cls_token = self.cls_token.expand(B, -1, -1)  # (B, 1, d_model)
+        x = torch.cat([cls_token, x], dim=1)  # (B, 257, d_model)
+        x = x + self.pos_embedding[:, :x.size(1), :]
+
+        x = self.transformer(x)  # (B, 257, d_model)
+
+        cls_out = x[:, 0, :]  # (B, d_model)
+        output = self.head(cls_out)  # (B, 4)
+        return output
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+        self.to(self.device)
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        # earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+
+        for epoch in range(nEpochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+                inputs = inputs.unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader, criterion)
+            valErrors.append(valLoss)
+            
+            # if earlyStop.check(valLoss):
+            #     print(f'Early stopping at epoch {epoch + 1}')
+            #     break
+            
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+                
+            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+            
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                torch.save(self.state_dict(), checkpoint_path)
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+    def evaluate(self, loader, criterion=nn.MSELoss()):
+        self.eval()
+        totalLoss = 0.0
+        with torch.no_grad():
+            for inputs, targets in loader:
+                inputs = inputs.unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                totalLoss += loss.item()
+        avgLoss = totalLoss / len(loader)
+        return avgLoss
+    
+    def predict(self, test_loader):
+        self.eval()
+        predictions = []
+        with torch.no_grad():
+            for inputs, *_ in test_loader:
+                inputs = inputs.unsqueeze(1).to(self.device)
+                outputs = self(inputs)
+                predictions.append(outputs)
+        return torch.cat(predictions, dim=0)
+
+class LSTMSequencePredictor(nn.Module):
+    def __init__(self, input_dim=1, seq_len=256, hidden_dim=128,
+                 num_layers=2, output_dim=4, device='cpu', aggregation='mean'):
+        super().__init__()
+        self.device = torch.device(device)
+        self.seq_len = seq_len
+        self.aggregation = aggregation
+
+        self.embedding = nn.Linear(input_dim, hidden_dim)
+        self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim,
+                            num_layers=num_layers, batch_first=True)
+        self.head = nn.Linear(hidden_dim, output_dim)
+
+        self.to(self.device)
+
+    def forward(self, x):
+        """
+        x: Tensor of shape (B, 1, 256)
+        """
+        x = x.to(self.device)
+        B, H, W = x.shape
+        assert H == 1 and W == self.seq_len, f"Expected input shape (B, 1, {self.seq_len}), got {x.shape}"
+
+        x = x.view(B, W).unsqueeze(-1)  # (B, 256, 1)
+        x = self.embedding(x)  # (B, 256, hidden_dim)
+
+        x, _ = self.lstm(x)  # (B, 256, hidden_dim)
+        tokenwise_outputs = self.head(x)  # (B, 256, 4)
+
+        if self.aggregation == 'mean':
+            output = tokenwise_outputs.mean(dim=1)  # (B, 4)
+        elif self.aggregation == 'last':
+            output = tokenwise_outputs[:, -1, :]  # (B, 4)
+        elif self.aggregation == 'max':
+            output, _ = tokenwise_outputs.max(dim=1)  # (B, 4)
+        else:
+            raise ValueError(f"Unsupported aggregation mode: {self.aggregation}")
+
+        return output, tokenwise_outputs  # (B, 4), (B, 256, 4)
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+        self.to(self.device)
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        # earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+
+        for epoch in range(nEpochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+                inputs = inputs.unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs, _ = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader, criterion)
+            valErrors.append(valLoss)
+            
+            # if earlyStop.check(valLoss):
+            #     print(f'Early stopping at epoch {epoch + 1}')
+            #     break
+            
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+                
+            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+            
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                torch.save(self.state_dict(), checkpoint_path)
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+    def evaluate(self, loader, criterion=nn.MSELoss()):
+        self.eval()
+        totalLoss = 0.0
+        with torch.no_grad():
+            for inputs, targets in loader:
+                inputs = inputs.unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                outputs, _ = self(inputs)
+                loss = criterion(outputs, targets)
+                totalLoss += loss.item()
+        avgLoss = totalLoss / len(loader)
+        return avgLoss
+    
+    def predict(self, test_loader):
+        self.eval()
+        predictions = []
+        with torch.no_grad():
+            for inputs, *_ in test_loader:
+                inputs = inputs.unsqueeze(1).to(self.device)
+                outputs, _ = self(inputs)
+                predictions.append(outputs)
+        return torch.cat(predictions, dim=0)
+
+class TransformerWithAttentionAggregation(nn.Module):
+    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4,
+                 output_dim=4, device='cpu'):
+        super().__init__()
+        self.device = torch.device(device)
+        self.seq_len = seq_len
+
+        self.embedding = nn.Linear(input_dim, d_model)
+        self.pos_embedding = nn.Parameter(torch.randn(1, seq_len, d_model, device=self.device))
+
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        self.head = nn.Linear(d_model, output_dim)
+
+        # Attention weights: from d_model to scalar weight per token
+        self.attention_fc = nn.Linear(d_model, 1)
+
+        self.to(self.device)
+
+    def forward(self, x):
+        """
+        x: Tensor of shape (B, 1, 256)
+        """
+        x = x.to(self.device)
+        B, H, W = x.shape
+        assert H == 1 and W == self.seq_len, f"Expected input shape (B, 1, {self.seq_len}), got {x.shape}"
+
+        x = x.view(B, W).unsqueeze(-1)  # (B, 256, 1)
+        x = self.embedding(x) + self.pos_embedding  # (B, 256, d_model)
+
+        x = self.transformer(x)  # (B, 256, d_model)
+        tokenwise_outputs = self.head(x)  # (B, 256, 4)
+
+        attn_weights = self.attention_fc(x)  # (B, 256, 1)
+        attn_weights = torch.softmax(attn_weights, dim=1)  # (B, 256, 1)
+
+        weighted_output = (tokenwise_outputs * attn_weights).sum(dim=1)  # (B, 4)
+
+        return weighted_output, tokenwise_outputs, attn_weights  # (B, 4), (B, 256, 4), (B, 256, 1)
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+        self.to(self.device)
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        # earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+
+        for epoch in range(nEpochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+                inputs = inputs.unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs, _, _ = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader, criterion)
+            valErrors.append(valLoss)
+            
+            # if earlyStop.check(valLoss):
+            #     print(f'Early stopping at epoch {epoch + 1}')
+            #     break
+            
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+                
+            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+            
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                torch.save(self.state_dict(), checkpoint_path)
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+    def evaluate(self, loader, criterion=nn.MSELoss()):
+        self.eval()
+        totalLoss = 0.0
+        with torch.no_grad():
+            for inputs, targets in loader:
+                inputs = inputs.unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                outputs, _, _ = self(inputs)
+                loss = criterion(outputs, targets)
+                totalLoss += loss.item()
+        avgLoss = totalLoss / len(loader)
+        return avgLoss
+    
+    def predict(self, test_loader):
+        self.eval()
+        predictions = []
+        with torch.no_grad():
+            for inputs, *_ in test_loader:
+                inputs = inputs.unsqueeze(1).to(self.device)
+                outputs, _, _ = self(inputs)
+                predictions.append(outputs)
+        return torch.cat(predictions, dim=0)
