@@ -169,7 +169,7 @@ class saury_model(nn.Module):
         valErrors = []
         epochTimes = []
         bestValLoss = float('inf')
-        if checkpoint_path[-4:] != '.pth':
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
             raise ValueError("Checkpoint path must end with .pth")
         # Also check that we wont overwrite the pretrained model
         if checkpoint_path == root_dir / 'weights/saury.pth':
@@ -214,7 +214,8 @@ class saury_model(nn.Module):
 
             if valLoss < bestValLoss:
                 bestValLoss = valLoss
-                torch.save(self.state_dict(), checkpoint_path)
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
@@ -486,7 +487,7 @@ class tpcnet_all_phases(nn.Module):
         bestValLoss = float('inf')
         #TODO: save with epoch number in name for interruped training, add handling to train if not at provided epochs
         # Check if the provided path ends with .pth
-        if checkpoint_path[-4:] != '.pth':
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
             raise ValueError("Checkpoint path must end with .pth")
         # Also check that we wont overwrite the pretrained model
         if checkpoint_path == root_dir / 'weights/tpcnet.pth':
@@ -540,7 +541,8 @@ class tpcnet_all_phases(nn.Module):
             # Lmao this saves every epoch instead of every run at the moment. Oops.
             if valLoss < bestValLoss:
                 bestValLoss = valLoss
-                torch.save(self.state_dict(), checkpoint_path)
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
@@ -721,7 +723,7 @@ class bayeshi_model(nn.Module):
         bestValLoss = float('inf')
         #TODO: save with epoch number in name for interruped training, add handling to train if not at provided epochs
         # Check if the provided path ends with .pth
-        if checkpoint_path[-4:] != '.pth':
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
             raise ValueError("Checkpoint path must end with .pth")
         # Also check that we wont overwrite the pretrained model
         if checkpoint_path == root_dir / 'weights/tigress.pth':
@@ -783,7 +785,8 @@ class bayeshi_model(nn.Module):
             # Lmao this saves every epoch instead of every run at the moment. Oops.
             if valLoss < bestValLoss:
                 bestValLoss = valLoss
-                torch.save(self.state_dict(), checkpoint_path)
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
@@ -881,6 +884,9 @@ class rnn_model(nn.Module):
         epochTimes = []
         bestValLoss = float('inf')
         
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
         print('Training Model')
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
@@ -918,7 +924,9 @@ class rnn_model(nn.Module):
             
             if valLoss < bestValLoss:
                 bestValLoss = valLoss
-                torch.save(self.state_dict(), checkpoint_path)
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+
         return trainErrors, valErrors, trainedEpochs, epochTimes
     
     def evaluate(self, loader, criterion=nn.MSELoss()):
@@ -944,12 +952,19 @@ class rnn_model(nn.Module):
                 predictions.append(outputs)
         return torch.cat(predictions, dim=0)
 
+    def load_weights(self, path):
+        print(f'Loading model from {path}')
+        if self.device == 'cpu':
+            self.load_state_dict(torch.load(path, map_location=self.device))
+        else:
+            self.load_state_dict(torch.load(path))
+            self.to(self.device)
+        print('Model loaded successfully')
+
 class LSTMSequencePredictor(nn.Module):
-    def __init__(self, input_dim=1, seq_len=256, hidden_dim=128,
-                 num_layers=2, output_dim=4, device='cpu', aggregation='mean'):
+    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=4, device='cpu', aggregation='mean'):
         super().__init__()
         self.device = torch.device(device)
-        self.seq_len = seq_len
         self.aggregation = aggregation
 
         self.embedding = nn.Linear(input_dim, hidden_dim)
@@ -964,14 +979,14 @@ class LSTMSequencePredictor(nn.Module):
         x: Tensor of shape (B, 1, 256)
         """
         x = x.to(self.device)
-        B, H, W = x.shape
-        assert H == 1 and W == self.seq_len, f"Expected input shape (B, 1, {self.seq_len}), got {x.shape}"
+        B, H, L = x.shape
+        assert H == 1, f"Expected input shape (B, 1, L), got {x.shape}"
 
-        x = x.view(B, W).unsqueeze(-1)  # (B, 256, 1)
-        x = self.embedding(x)  # (B, 256, hidden_dim)
+        x = x.view(B, L).unsqueeze(-1)  # (B, L, 1)
+        x = self.embedding(x)  # (B, L, hidden_dim)
 
-        x, _ = self.lstm(x)  # (B, 256, hidden_dim)
-        tokenwise_outputs = self.head(x)  # (B, 256, 4)
+        x, _ = self.lstm(x)  # (B, L, hidden_dim)
+        tokenwise_outputs = self.head(x)  # (B, L, 4)
 
         if self.aggregation == 'mean':
             output = tokenwise_outputs.mean(dim=1)  # (B, 4)
@@ -994,6 +1009,9 @@ class LSTMSequencePredictor(nn.Module):
         valErrors = []
         epochTimes = []
         bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
         
         print('Training Model')
         print('Initial learning rate:', scheduler.get_last_lr())
@@ -1032,7 +1050,9 @@ class LSTMSequencePredictor(nn.Module):
             
             if valLoss < bestValLoss:
                 bestValLoss = valLoss
-                torch.save(self.state_dict(), checkpoint_path)
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+
         return trainErrors, valErrors, trainedEpochs, epochTimes
     
     def evaluate(self, loader, criterion=nn.MSELoss()):
@@ -1058,9 +1078,17 @@ class LSTMSequencePredictor(nn.Module):
                 predictions.append(outputs)
         return torch.cat(predictions, dim=0)
 
+    def load_weights(self, path):
+        print(f'Loading model from {path}')
+        if self.device == 'cpu':
+            self.load_state_dict(torch.load(path, map_location=self.device))
+        else:
+            self.load_state_dict(torch.load(path))
+            self.to(self.device)
+        print('Model loaded successfully')
+
 class TransformerWithAttentionAggregation(nn.Module):
-    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4,
-                 output_dim=4, device='cpu'):
+    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4, output_dim=4, device='cpu'):
         super().__init__()
         self.device = torch.device(device)
         self.seq_len = seq_len
@@ -1110,6 +1138,9 @@ class TransformerWithAttentionAggregation(nn.Module):
         epochTimes = []
         bestValLoss = float('inf')
         
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
         print('Training Model')
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
@@ -1147,7 +1178,9 @@ class TransformerWithAttentionAggregation(nn.Module):
             
             if valLoss < bestValLoss:
                 bestValLoss = valLoss
-                torch.save(self.state_dict(), checkpoint_path)
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+
         return trainErrors, valErrors, trainedEpochs, epochTimes
     
     def evaluate(self, loader, criterion=nn.MSELoss()):
@@ -1172,3 +1205,381 @@ class TransformerWithAttentionAggregation(nn.Module):
                 outputs, _, _ = self(inputs)
                 predictions.append(outputs)
         return torch.cat(predictions, dim=0)
+    
+    def load_weights(self, path):
+        print(f'Loading model from {path}')
+        if self.device == 'cpu':
+            self.load_state_dict(torch.load(path, map_location=self.device))
+        else:
+            self.load_state_dict(torch.load(path))
+            self.to(self.device)
+        print('Model loaded successfully')
+
+class SimpleCNN(nn.Module):
+    def __init__(self, cnn_blocks, device='cpu'):
+        super().__init__()
+        self.device = device
+        self.cnn_blocks = cnn_blocks
+        self.conv_layers = nn.ModuleList()
+        
+        if cnn_blocks > 5:
+            raise ValueError("Maximum number of CNN blocks is 5.")
+                
+        Hout, Wout = 1, 256  # Initial input size
+
+        # Take TPCNet's approach to number of kernels and kernel widths
+        for i in range(cnn_blocks):
+            if i == 0:
+                in_channels = 1
+                mid_channels = 80 # is 72 in TPCNet, but we use 80 to allow for up to 5 CNN blocks
+                out_channels = 72 # is 64 in TPCNet, but we use 72 to allow for up to 5 CNN blocks
+            else:
+                in_channels = out_channels
+                mid_channels = out_channels - 8
+                out_channels = out_channels - 16
+                
+            self.conv_layers.append(
+                nn.Conv2d(
+                    in_channels=in_channels,
+                    out_channels=mid_channels,
+                    kernel_size=(1, 7),
+                    stride=1,
+                    padding=0,
+                    bias=True,
+                    padding_mode='zeros'
+                )
+            )
+            self.conv_layers.append(nn.BatchNorm2d(mid_channels))
+            self.conv_layers.append(nn.ReLU())
+            self.conv_layers.append(
+                nn.Conv2d(
+                    in_channels=mid_channels,
+                    out_channels=out_channels,
+                    kernel_size=(1, 33),
+                    stride=1,
+                    padding=0,
+                    bias=True,
+                    padding_mode='zeros'
+                )
+            )
+            self.conv_layers.append(nn.BatchNorm2d(out_channels))
+            self.conv_layers.append(nn.ReLU())
+            
+            # Calculate output size after this block
+            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, 7], s=[1, 1], p=[0, 0], d=[1, 1])
+            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, 33], s=[1, 1], p=[0, 0], d=[1, 1])
+        
+        self.flatten = nn.Flatten()
+        self.linear = nn.Linear(out_channels * Wout, 4)
+
+        # init parameter
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0]*m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2./n))
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+            elif isinstance(m, nn.Linear):
+                m.bias.data.zero_()
+
+    def forward(self, x):
+        for layer in self.conv_layers:
+            if isinstance(layer, nn.Conv2d):
+                x = layer(x)
+            elif isinstance(layer, nn.BatchNorm2d):
+                x = layer(x)
+            elif isinstance(layer, nn.ReLU):
+                x = F.relu(x)
+            else:
+                raise ValueError(f"Unsupported layer type: {type(layer)}")
+        
+        x = self.flatten(x)
+        x = self.linear(x)
+        
+        return x
+
+    def get_output_size(self, Hin, Win, k, s=[1, 1], p=[0, 0], d=[1, 1]):
+        Hout = int((Hin + 2 * p[0] - d[0] * (k[0] - 1) - 1) / s[0] + 1)
+        Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
+        return Hout, Wout
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+        self.to(self.device)
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+
+        for epoch in range(nEpochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            for inputs, targets in train_loader:
+                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader)
+            valErrors.append(valLoss)
+    
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+
+            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+    def evaluate(self, loader, criterion=None):
+        criterion = nn.MSELoss() if criterion is None else criterion
+        self.eval()
+        totalLoss = 0.0
+        with torch.no_grad():
+            for inputs, targets in loader:
+                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                totalLoss += loss.item()
+        avgLoss = totalLoss / len(loader)
+        return avgLoss
+    
+    def predict(self, test_loader, numPredictions):
+        self.eval()
+        allPredictions = []
+        # for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
+        for _ in range(numPredictions):
+            predictions = []
+            with torch.no_grad():
+                for inputs, *_ in test_loader:
+                    inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+                    outputs = self(inputs)
+                    predictions.append(outputs)
+            allPredictions.append(torch.cat(predictions, dim=0))
+        return torch.stack(allPredictions, dim=0)
+    
+    def load_weights(self, path):
+        print(f'Loading model from {path}')
+        if self.device == 'cpu':
+            self.load_state_dict(torch.load(path, map_location=self.device))
+        else:
+            self.load_state_dict(torch.load(path))
+            self.to(self.device)
+        print('Model loaded successfully')
+
+class SimpleBNN(nn.Module):
+    def __init__(self, cnn_blocks, prior_mu, prior_sigma, kl_weight = 0.01, device='cpu'):
+        super().__init__()
+        self.device = device
+        self.cnn_blocks = cnn_blocks
+        self.prior_mu = prior_mu
+        self.prior_sigma = prior_sigma
+        self.kl_weight = kl_weight
+        self.conv_layers = nn.ModuleList()
+        
+        if cnn_blocks > 5:
+            raise ValueError("Maximum number of CNN blocks is 5.")
+                
+        Hout, Wout = 1, 256  # Initial input size
+
+        # Take TPCNet's approach to number of kernels and kernel widths
+        for i in range(cnn_blocks):
+            if i == 0:
+                in_channels = 1
+                mid_channels = 80 # is 72 in TPCNet, but we use 80 to allow for up to 5 CNN blocks
+                out_channels = 72 # is 64 in TPCNet, but we use 72 to allow for up to 5 CNN blocks
+            else:
+                in_channels = out_channels
+                mid_channels = out_channels - 8
+                out_channels = out_channels - 16
+                
+            self.conv_layers.append(
+                bnn.BayesConv2d(
+                    prior_mu=prior_mu,
+                    prior_sigma=prior_sigma,
+                    in_channels=in_channels,
+                    out_channels=mid_channels,
+                    kernel_size=(1, 7),
+                    stride=1,
+                    padding=0,
+                    bias=True,
+                    padding_mode='zeros'
+                )
+            )
+            self.conv_layers.append(bnn.BayesBatchNorm2d(prior_mu, prior_sigma, mid_channels))
+            self.conv_layers.append(nn.ReLU())
+            self.conv_layers.append(
+                bnn.BayesConv2d(
+                    prior_mu=prior_mu,
+                    prior_sigma=prior_sigma,
+                    in_channels=mid_channels,
+                    out_channels=out_channels,
+                    kernel_size=(1, 33),
+                    stride=1,
+                    padding=0,
+                    bias=True,
+                    padding_mode='zeros'
+                )
+            )
+            self.conv_layers.append(bnn.BayesBatchNorm2d(prior_mu, prior_sigma, out_channels))
+            self.conv_layers.append(nn.ReLU())
+            
+            # Calculate output size after this block
+            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, 7], s=[1, 1], p=[0, 0], d=[1, 1])
+            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, 33], s=[1, 1], p=[0, 0], d=[1, 1])
+        
+        self.flatten = nn.Flatten()
+        self.linear = bnn.BayesLinear(prior_mu, prior_sigma, out_channels * Wout, 4)
+
+        # TorchBNN uses the same initialisation as Adv-BNN which seems fine
+        # # init parameter
+        # for m in self.modules():
+        #     if isinstance(m, nn.Conv2d):
+        #         n = m.kernel_size[0]*m.out_channels
+        #         m.weight.data.normal_(0, math.sqrt(2./n))
+        #     elif isinstance(m, nn.BatchNorm2d):
+        #         m.weight.data.fill_(1)
+        #         m.bias.data.zero_()
+        #     elif isinstance(m, nn.Linear):
+        #         m.bias.data.zero_()
+
+    def forward(self, x):
+        for layer in self.conv_layers:
+            if isinstance(layer, bnn.BayesConv2d):
+                x = layer(x)
+            elif isinstance(layer, bnn.BayesBatchNorm2d):
+                x = layer(x)
+            elif isinstance(layer, nn.ReLU):
+                x = F.relu(x)
+            else:
+                raise ValueError(f"Unsupported layer type: {type(layer)}")
+        
+        x = self.flatten(x)
+        x = self.linear(x)
+        
+        return x
+
+    def get_output_size(self, Hin, Win, k, s=[1, 1], p=[0, 0], d=[1, 1]):
+        Hout = int((Hin + 2 * p[0] - d[0] * (k[0] - 1) - 1) / s[0] + 1)
+        Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
+        return Hout, Wout
+    
+    def lossFunction(self, outputs, targets, KLweight):
+        MSE = nn.MSELoss()
+        BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
+        return MSE(outputs, targets) + KLweight * BKLoss(self)
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+        self.to(self.device)
+        criterion = self.lossFunction
+        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+
+        for epoch in range(nEpochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            for inputs, targets in train_loader:
+                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets, self.kl_weight)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader)
+            valErrors.append(valLoss)
+    
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+
+            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+    def evaluate(self, loader, criterion=None):
+        criterion = nn.MSELoss() if criterion is None else criterion
+        self.eval()
+        totalLoss = 0.0
+        with torch.no_grad():
+            for inputs, targets in loader:
+                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                totalLoss += loss.item()
+        avgLoss = totalLoss / len(loader)
+        return avgLoss
+    
+    def predict(self, test_loader, numPredictions):
+        self.eval()
+        allPredictions = []
+        # for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
+        for _ in range(numPredictions):
+            predictions = []
+            with torch.no_grad():
+                for inputs, *_ in test_loader:
+                    inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+                    outputs = self(inputs)
+                    predictions.append(outputs)
+            allPredictions.append(torch.cat(predictions, dim=0))
+        return torch.stack(allPredictions, dim=0)
+    
+    def load_weights(self, path):
+        print(f'Loading model from {path}')
+        if self.device == 'cpu':
+            self.load_state_dict(torch.load(path, map_location=self.device))
+        else:
+            self.load_state_dict(torch.load(path))
+            self.to(self.device)
+        print('Model loaded successfully')
