@@ -94,4 +94,9 @@ def load_tigress_data(data_path='/scratch/mk27/em8117/R8_2pc/', sim_number = 'al
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     
     return train_loader, val_loader, test_loader
-    
+
+def load_saury_data(data_path='/scratch/fd08/em8117/MLdata/'):
+    spectra = fits.getdata(data_path + 'Tb_saury_512_thick_sector_1.fits')
+    fcnm = fits.getdata(data_path + 'fCNM_saury_512_thick_sector_1.fits')
+    funm = fits.getdata(data_path + 'fUNM_saury_512_thick_sector_1.fits')
+    fwnm = fits.getdata(data_path + 'fWNM_saury_512_thick_sector_1.fits')
