@@ -100,6 +100,7 @@ def load_model(model_name, **kwargs):
     params = copy.deepcopy(config['params'])
     params.update(kwargs)
     
-    model = model_class(**params, device='cuda' if torch.cuda.is_available() else 'cpu')
+    # model = model_class(**params, device='cuda' if torch.cuda.is_available() else 'cpu')
+    model = model_class(**params)
 
     return model

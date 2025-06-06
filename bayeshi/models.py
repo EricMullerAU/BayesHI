@@ -84,10 +84,67 @@ class earlyStopper:
         else:
             return False
 
-class saury_model(nn.Module):
-    def __init__(self, cnnBlocks=1, kernelNumber=12, kernelWidth=51, MHANumber=4, transformerNumber=1, priorMu=0.0, priorSigma=0.01, posEncType='off', device='cpu'):
-        super(saury_model, self).__init__()
-        self.device = device
+class BaseModel(nn.Module):
+    def __init__(self, device=None, verbose=False):
+        super().__init__()
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = torch.device(device)
+        self.to(self.device)
+        self.verbose = verbose
+        self.default_weights_path = None  # to be set in subclasses if pretrained weights are available
+        
+    def preprocess_inputs(self, x):
+        """ Default implementation. Override in subclasses if needed. """
+        return x.to(self.device)
+
+    def predict(self, test_loader, num_predictions=1):
+        self.eval()
+        all_predictions = []
+        loop = tqdm(range(num_predictions), desc='Predicting', file=sys.stdout) if self.verbose else range(num_predictions)
+        for _ in loop:
+            predictions = []
+            with torch.no_grad():
+                for inputs, _ in test_loader:
+                    inputs = self.preprocess_inputs(inputs)
+                    outputs = self(inputs)
+                    # Handle case of LSTM models returning a tuple (outputs, output history)
+                    if isinstance(outputs, tuple):
+                        outputs = outputs[0]
+                    predictions.append(outputs)
+            all_predictions.append(torch.cat(predictions, dim=0))
+        return torch.cat(all_predictions, dim=0)
+
+    def evaluate(self, loader, criterion=nn.MSELoss()):
+        self.eval()
+        total_loss = 0.0
+        with torch.no_grad():
+            for inputs, targets in loader:
+                inputs = self.preprocess_inputs(inputs)
+                targets = targets.to(self.device)
+                outputs = self(inputs)
+                if isinstance(outputs, tuple):
+                    outputs = outputs[0]
+                loss = criterion(outputs, targets)
+                total_loss += loss.item()
+        return total_loss / len(loader)
+
+    def load_weights(self, path=None):
+        if path is None:
+            if self.default_weights_path is None:
+                raise ValueError("No path provided and no default weights path set.")
+            path = self.default_weights_path
+        print(f'Loading model from {path}')
+        state_dict = torch.load(path, map_location=self.device)
+        self.load_state_dict(state_dict)
+        self.to(self.device)
+        print('Model loaded successfully')
+
+class saury_model(BaseModel):
+    def __init__(self, cnnBlocks=1, kernelNumber=12, kernelWidth=51, MHANumber=4, transformerNumber=1, priorMu=0.0, priorSigma=0.01, posEncType='off'):
+        super().__init__()
+        self.default_weights_path = root_dir / 'weights/saury.pth'
+        
         # Convolutional layers
         self.conv_layers = nn.ModuleList()
         self.pool_layers = nn.ModuleList()
@@ -148,6 +205,10 @@ class saury_model(nn.Module):
         x = torch.cat((F.softmax(x[:, :3], dim=1), torch.clamp(x[:, 3], min=1).unsqueeze(1)), dim=1)
         return x
 
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add channel and height dimensions. """
+        return x.unsqueeze(1).unsqueeze(1).to(self.device)
+
     def get_output_size(self, Hin, Win, k, s=[1, 1], p=[0, 0], d=[1, 1]):
         Hout = int((Hin + 2 * p[0] - d[0] * (k[0] - 1) - 1) / s[0] + 1)
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
@@ -157,7 +218,6 @@ class saury_model(nn.Module):
         MSE = nn.MSELoss()
         BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
         return MSE(outputs, targets) + KLweight * BKLoss(self)
-    
 
     def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 50, learningRate = 0.0005, schedulerStep = 15, stopperPatience = 5, stopperTol = 1e-4, maxKLweight = 0.01, maxKLepoch = 50):
         self.to(self.device)
@@ -184,8 +244,9 @@ class saury_model(nn.Module):
             startTime = time.time()
             self.train()
             runningLoss = 0.0
-            for inputs, targets in train_loader:
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
@@ -218,41 +279,6 @@ class saury_model(nn.Module):
                     torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
-
-    def evaluate(self, loader, criterion):
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-
-    def predict(self, test_loader, numPredictions):
-        self.eval()
-        allPredictions = []
-        for _ in tqdm(range(numPredictions), desc='Predicting', file=sys.stdout):
-            predictions = []
-            with torch.no_grad():
-                for inputs, *_ in test_loader:
-                    inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                    outputs = self(inputs)
-                    predictions.append(outputs)
-            allPredictions.append(torch.cat(predictions, dim=0))
-        return torch.stack(allPredictions, dim=0)
-
-    def load_weights(self, path = root_dir / 'weights/saury.pth'):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
     
 class TPCNetCustomLoss(nn.Module):
     def __init__(self, weights=[1., 1.]):
@@ -271,17 +297,16 @@ class TPCNetCustomLoss(nn.Module):
 
         return total_loss
 
-class tpcnet_all_phases(nn.Module):
-    def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0., device='cpu'):
-        super(tpcnet_all_phases, self).__init__()
+class tpcnet_all_phases(BaseModel):
+    def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0.):
+        super().__init__()
+        self.default_weights_path = root_dir / 'weights/tpcnet.pth'
 
         p = [0, 0] # padding
         d = [1, 1] # dilation
         k = [1, 7] # kernel size for small layers
         s = [1, 1] # stride
-        
-        self.device = device
-        
+                
         self.num_features = 54
         self.input_row = input_row
         self.in_channels = in_channels
@@ -470,6 +495,10 @@ class tpcnet_all_phases(nn.Module):
         x = self.decoder(x)
         return x
 
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add channel and height dimensions. """
+        return x.unsqueeze(1).unsqueeze(1).to(self.device)
+
     def get_output_size(self, Hin, Win, k, s=[1, 1], p=[0, 0], d=[1, 1]):
         Hout = int((Hin + 2 * p[0] - d[0] * (k[0] - 1) - 1) / s[0] + 1)
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
@@ -502,8 +531,9 @@ class tpcnet_all_phases(nn.Module):
             self.train()
             runningLoss = 0.0
             mse_running_loss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
@@ -546,47 +576,11 @@ class tpcnet_all_phases(nn.Module):
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
-    def evaluate(self, loader, criterion):
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-
-    def predict(self, test_loader, numPredictions):
-        if numPredictions  > 1:
-            print('Warning: numPredictions > 1, but this model is not Bayesian, so all predictions will be the same. Re-run with numPredictions = 1 for faster inference.')
-        self.eval()
-        allPredictions = []
-        for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
-            predictions = []
-            with torch.no_grad():
-                for inputs, *_ in test_loader:
-                    inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                    outputs = self(inputs)
-                    predictions.append(outputs)
-            allPredictions.append(torch.cat(predictions, dim=0))
-        return torch.stack(allPredictions, dim=0)
-
-    def load_weights(self, path = root_dir / 'weights/tpcnet.pth'):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
-
-class bayeshi_model(nn.Module):
-    def __init__(self, cnnBlocks: int = 1, kernelNumber: int = 8, kernelWidth1: int = 31, kernelWidth2: int = 3, kernelMult: float = 2.0, pooling: str = 'off', MHANumber: int = 4, transformerNumber: int = 1, priorMu: float = 0.0, priorSigma: float = 0.01, posEncType: str = 'sinusoidal', device: str = 'cpu'):
+class bayeshi_model(BaseModel):
+    def __init__(self, cnnBlocks: int = 1, kernelNumber: int = 8, kernelWidth1: int = 31, kernelWidth2: int = 3, kernelMult: float = 2.0, pooling: str = 'off', MHANumber: int = 4, transformerNumber: int = 1, priorMu: float = 0.0, priorSigma: float = 0.01, posEncType: str = 'sinusoidal'):
         super().__init__()
-        self.device = device
+        self.default_weights_path = root_dir / 'weights/bayeshi.pth'
+        
         self.pooling = pooling
         if pooling not in ['max', 'avg', 'off']:
             raise ValueError("Pooling must be 'max', 'avg', or 'off'.")
@@ -697,6 +691,10 @@ class bayeshi_model(nn.Module):
         x = x / 100 # this fixes the issue of exploding values ruining the softmax, likely caused by the new Kaiming initialisation.
         x = torch.cat((F.softmax(x[:, :3], dim=1), torch.clamp(x[:, 3], min=1).unsqueeze(1)), dim=1)
         return x
+    
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add channel and height dimensions. """
+        return x.unsqueeze(1).unsqueeze(1).to(self.device)
 
     def get_output_size(self, Hin, Win, k, s=[1, 1], p=[0, 0], d=[1, 1]):
         Hout = int((Hin + 2 * p[0] - d[0] * (k[0] - 1) - 1) / s[0] + 1)
@@ -709,8 +707,6 @@ class bayeshi_model(nn.Module):
         return MSE(outputs, targets) + KLweight * BKLoss(self)
 
     def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 100, learningRate = 0.001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0.0001, maxKLweight = 0.01, maxKLepoch = 100, early_stop = False):
-        
-        self.to(self.device)
         # Track a single set of weights through the training process
         criterion = self.lossFunction
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
@@ -733,7 +729,6 @@ class bayeshi_model(nn.Module):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        # import pdb
         for p in self.parameters():
             p.requires_grad = True  # Ensure all parameters are trainable
         for epoch in range(nEpochs):
@@ -741,28 +736,16 @@ class bayeshi_model(nn.Module):
             KLweight = maxKLweight * min(1, epoch / maxKLepoch)
             startTime = time.time()
             runningLoss = 0.0
-            # asdf = 0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-                # asdf += 1
-                # if asdf > 10:
-                #     break
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
-                # print('Outputs:', outputs[0])
-                # print('Targets:', targets[0])
                 loss = criterion(outputs, targets, KLweight)
-                # print some gradients for debugging
-                # print('Gradients:', [p.grad for p in self.parameters() if p.grad is not None][:5])  # Print first 5 gradients
-                # print('Loss:', loss.item())
                 loss.backward()
                 optimizer.step()
                 runningLoss += loss.item()
-                # pdb.set_trace()
-
-            # for i, p in enumerate(self.parameters()):
-            #     print(i, p.sum())
 
             trainLoss = runningLoss / len(train_loader)
             trainErrors.append(trainLoss)
@@ -790,47 +773,10 @@ class bayeshi_model(nn.Module):
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
-    def evaluate(self, loader, criterion=None):
-        criterion = nn.MSELoss() if criterion is None else criterion
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-
-    def predict(self, test_loader, numPredictions):
-        self.eval()
-        allPredictions = []
-        for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
-            predictions = []
-            with torch.no_grad():
-                for inputs, *_ in test_loader:
-                    inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                    outputs = self(inputs)
-                    predictions.append(outputs)
-            allPredictions.append(torch.cat(predictions, dim=0))
-        return torch.stack(allPredictions, dim=0)
-
-    def load_weights(self, path = root_dir / 'weights/tigress.pth'):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
-
-class rnn_model(nn.Module):
-    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4,
-                 output_dim=4, device='cpu'):
+class rnn_model(BaseModel):
+    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4, output_dim=4):
         super().__init__()
-        self.device = torch.device(device)
+        self.default_weights_path = None
 
         # Embed scalar inputs to d_model dimension
         self.embedding = nn.Linear(input_dim, d_model)
@@ -873,6 +819,10 @@ class rnn_model(nn.Module):
         output = self.head(cls_out)  # (B, 4)
         return output
     
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
+        return x.unsqueeze(1).to(self.device)
+    
     def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
@@ -895,8 +845,9 @@ class rnn_model(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-                inputs = inputs.unsqueeze(1).to(self.device)
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
@@ -928,43 +879,12 @@ class rnn_model(nn.Module):
                     torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
-    
-    def evaluate(self, loader, criterion=nn.MSELoss()):
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-    
-    def predict(self, test_loader):
-        self.eval()
-        predictions = []
-        with torch.no_grad():
-            for inputs, *_ in test_loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                outputs = self(inputs)
-                predictions.append(outputs)
-        return torch.cat(predictions, dim=0)
 
-    def load_weights(self, path):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
-
-class LSTMSequencePredictor(nn.Module):
-    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=4, device='cpu', aggregation='mean'):
+class LSTMSequencePredictor(BaseModel):
+    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=4, aggregation='mean'):
         super().__init__()
-        self.device = torch.device(device)
+        self.default_weights_path = None
+
         self.aggregation = aggregation
 
         self.embedding = nn.Linear(input_dim, hidden_dim)
@@ -999,6 +919,10 @@ class LSTMSequencePredictor(nn.Module):
 
         return output, tokenwise_outputs  # (B, 4), (B, 256, 4)
     
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
+        return x.unsqueeze(1).to(self.device)
+    
     def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
@@ -1021,8 +945,9 @@ class LSTMSequencePredictor(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-                inputs = inputs.unsqueeze(1).to(self.device)
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs, _ = self(inputs)
@@ -1054,43 +979,11 @@ class LSTMSequencePredictor(nn.Module):
                     torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
-    
-    def evaluate(self, loader, criterion=nn.MSELoss()):
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs, _ = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-    
-    def predict(self, test_loader):
-        self.eval()
-        predictions = []
-        with torch.no_grad():
-            for inputs, *_ in test_loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                outputs, _ = self(inputs)
-                predictions.append(outputs)
-        return torch.cat(predictions, dim=0)
 
-    def load_weights(self, path):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
-
-class LSTMSequenceToSequence(nn.Module):
-    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=1, device='cpu'):
+class LSTMSequenceToSequence(BaseModel):
+    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=1):
         super().__init__()
-        self.device = torch.device(device)
+        self.default_weights_path = None
 
         self.embedding = nn.Linear(input_dim, hidden_dim)
         self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim,
@@ -1118,9 +1011,12 @@ class LSTMSequenceToSequence(nn.Module):
             x = x.squeeze(-1)                # (B, L)
 
         return x  # (B, 256) or (B, 256, output_dim)
+    
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
+        return x.unsqueeze(1).to(self.device)
 
     def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
-        self.to(self.device)
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
@@ -1141,8 +1037,9 @@ class LSTMSequenceToSequence(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-                inputs = inputs.unsqueeze(1).to(self.device)
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
@@ -1174,44 +1071,12 @@ class LSTMSequenceToSequence(nn.Module):
                     torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
-    
-    def evaluate(self, loader, criterion=nn.MSELoss()):
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-    
-    def predict(self, test_loader):
-        self.eval()
-        predictions = []
-        with torch.no_grad():
-            for inputs, *_ in test_loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                outputs = self(inputs)
-                predictions.append(outputs)
-        return torch.cat(predictions, dim=0)
 
-    def load_weights(self, path):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
-
-
-class TransformerWithAttentionAggregation(nn.Module):
-    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4, output_dim=4, device='cpu'):
+class TransformerWithAttentionAggregation(BaseModel):
+    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4, output_dim=4):
         super().__init__()
-        self.device = torch.device(device)
+        self.default_weights_path = None
+
         self.seq_len = seq_len
 
         self.embedding = nn.Linear(input_dim, d_model)
@@ -1224,8 +1089,6 @@ class TransformerWithAttentionAggregation(nn.Module):
 
         # Attention weights: from d_model to scalar weight per token
         self.attention_fc = nn.Linear(d_model, 1)
-
-        self.to(self.device)
 
     def forward(self, x):
         """
@@ -1247,7 +1110,11 @@ class TransformerWithAttentionAggregation(nn.Module):
         weighted_output = (tokenwise_outputs * attn_weights).sum(dim=1)  # (B, 4)
 
         return weighted_output, tokenwise_outputs, attn_weights  # (B, 4), (B, 256, 4), (B, 256, 1)
-    
+
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
+        return x.unsqueeze(1).to(self.device)
+
     def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
@@ -1270,8 +1137,9 @@ class TransformerWithAttentionAggregation(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-                inputs = inputs.unsqueeze(1).to(self.device)
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs, _, _ = self(inputs)
@@ -1303,43 +1171,12 @@ class TransformerWithAttentionAggregation(nn.Module):
                     torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
-    
-    def evaluate(self, loader, criterion=nn.MSELoss()):
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs, _, _ = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-    
-    def predict(self, test_loader):
-        self.eval()
-        predictions = []
-        with torch.no_grad():
-            for inputs, *_ in test_loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                outputs, _, _ = self(inputs)
-                predictions.append(outputs)
-        return torch.cat(predictions, dim=0)
-    
-    def load_weights(self, path):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
 
-class SimpleCNN(nn.Module):
-    def __init__(self, cnn_blocks, device='cpu'):
+class SimpleCNN(BaseModel):
+    def __init__(self, cnn_blocks):
         super().__init__()
-        self.device = device
+        self.default_weights_path = None
+
         self.cnn_blocks = cnn_blocks
         self.conv_layers = nn.ModuleList()
         
@@ -1419,6 +1256,10 @@ class SimpleCNN(nn.Module):
         x = self.linear(x)
         
         return x
+    
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add channel and height dimensions. """
+        return x.unsqueeze(1).unsqueeze(1).to(self.device)
 
     def get_output_size(self, Hin, Win, k, s=[1, 1], p=[0, 0], d=[1, 1]):
         Hout = int((Hin + 2 * p[0] - d[0] * (k[0] - 1) - 1) / s[0] + 1)
@@ -1446,9 +1287,9 @@ class SimpleCNN(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-            for inputs, targets in train_loader:
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
@@ -1476,48 +1317,12 @@ class SimpleCNN(nn.Module):
                     torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
-    
-    def evaluate(self, loader, criterion=None):
-        criterion = nn.MSELoss() if criterion is None else criterion
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-    
-    def predict(self, test_loader, numPredictions):
-        self.eval()
-        allPredictions = []
-        # for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
-        for _ in range(numPredictions):
-            predictions = []
-            with torch.no_grad():
-                for inputs, *_ in test_loader:
-                    inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                    outputs = self(inputs)
-                    predictions.append(outputs)
-            allPredictions.append(torch.cat(predictions, dim=0))
-        return torch.stack(allPredictions, dim=0)
-    
-    def load_weights(self, path):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
 
-class SimpleBNN(nn.Module):
-    def __init__(self, cnn_blocks, prior_mu, prior_sigma, kl_weight = 0.01, device='cpu'):
+class SimpleBNN(BaseModel):
+    def __init__(self, cnn_blocks, prior_mu, prior_sigma, kl_weight = 0.01):
         super().__init__()
-        self.device = device
+        self.default_weights_path = None
+        
         self.cnn_blocks = cnn_blocks
         self.prior_mu = prior_mu
         self.prior_sigma = prior_sigma
@@ -1605,6 +1410,10 @@ class SimpleBNN(nn.Module):
         x = self.linear(x)
         
         return x
+    
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add channel and height dimensions. """
+        return x.unsqueeze(1).unsqueeze(1).to(self.device)
 
     def get_output_size(self, Hin, Win, k, s=[1, 1], p=[0, 0], d=[1, 1]):
         Hout = int((Hin + 2 * p[0] - d[0] * (k[0] - 1) - 1) / s[0] + 1)
@@ -1617,7 +1426,6 @@ class SimpleBNN(nn.Module):
         return MSE(outputs, targets) + KLweight * BKLoss(self)
     
     def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
-        self.to(self.device)
         criterion = self.lossFunction
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
@@ -1637,9 +1445,9 @@ class SimpleBNN(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-            for inputs, targets in train_loader:
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
@@ -1667,40 +1475,3 @@ class SimpleBNN(nn.Module):
                     torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
-    
-    def evaluate(self, loader, criterion=None):
-        criterion = nn.MSELoss() if criterion is None else criterion
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-    
-    def predict(self, test_loader, numPredictions):
-        self.eval()
-        allPredictions = []
-        # for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
-        for _ in range(numPredictions):
-            predictions = []
-            with torch.no_grad():
-                for inputs, *_ in test_loader:
-                    inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                    outputs = self(inputs)
-                    predictions.append(outputs)
-            allPredictions.append(torch.cat(predictions, dim=0))
-        return torch.stack(allPredictions, dim=0)
-    
-    def load_weights(self, path):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
