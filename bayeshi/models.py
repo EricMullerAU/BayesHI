@@ -1087,6 +1087,127 @@ class LSTMSequencePredictor(nn.Module):
             self.to(self.device)
         print('Model loaded successfully')
 
+class LSTMSequenceToSequence(nn.Module):
+    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=1, device='cpu'):
+        super().__init__()
+        self.device = torch.device(device)
+
+        self.embedding = nn.Linear(input_dim, hidden_dim)
+        self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim,
+                            num_layers=num_layers, batch_first=True)
+        self.head = nn.Linear(hidden_dim, output_dim)
+
+        self.to(self.device)
+
+    def forward(self, x):
+        """
+        x: Tensor of shape (B, 1, 256)
+        Returns:
+            output: (B, 256) or (B, 256, output_dim) depending on output_dim
+        """
+        x = x.to(self.device)
+        B, H, L = x.shape
+        assert H == 1, f"Expected input shape (B, 1, L), got {x.shape}"
+
+        x = x.view(B, L).unsqueeze(-1)       # (B, L, 1)
+        x = self.embedding(x)                # (B, L, hidden_dim)
+        x, _ = self.lstm(x)                  # (B, L, hidden_dim)
+        x = self.head(x)                     # (B, L, output_dim)
+
+        if x.shape[-1] == 1:
+            x = x.squeeze(-1)                # (B, L)
+
+        return x  # (B, 256) or (B, 256, output_dim)
+
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+        self.to(self.device)
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        # earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+
+        for epoch in range(nEpochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+                inputs = inputs.unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader, criterion)
+            valErrors.append(valLoss)
+            
+            # if earlyStop.check(valLoss):
+            #     print(f'Early stopping at epoch {epoch + 1}')
+            #     break
+            
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+                
+            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+            
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+    def evaluate(self, loader, criterion=nn.MSELoss()):
+        self.eval()
+        totalLoss = 0.0
+        with torch.no_grad():
+            for inputs, targets in loader:
+                inputs = inputs.unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                totalLoss += loss.item()
+        avgLoss = totalLoss / len(loader)
+        return avgLoss
+    
+    def predict(self, test_loader):
+        self.eval()
+        predictions = []
+        with torch.no_grad():
+            for inputs, *_ in test_loader:
+                inputs = inputs.unsqueeze(1).to(self.device)
+                outputs = self(inputs)
+                predictions.append(outputs)
+        return torch.cat(predictions, dim=0)
+
+    def load_weights(self, path):
+        print(f'Loading model from {path}')
+        if self.device == 'cpu':
+            self.load_state_dict(torch.load(path, map_location=self.device))
+        else:
+            self.load_state_dict(torch.load(path))
+            self.to(self.device)
+        print('Model loaded successfully')
+
+
 class TransformerWithAttentionAggregation(nn.Module):
     def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4, output_dim=4, device='cpu'):
         super().__init__()
