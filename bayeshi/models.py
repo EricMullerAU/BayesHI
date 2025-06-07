@@ -1,14 +1,72 @@
+"""
+models.py
+This module defines a collection of PyTorch neural network models and utilities for time series and sequence modeling, with a focus on Bayesian and transformer-based architectures. The models are designed for 1D input sequences (typically of length 256) and support both deterministic and Bayesian inference. The module also provides training utilities, custom loss functions, and positional encoding layers.
+Classes:
+--------
+- PositionalEncoding(nn.Module):
+    Implements standard sinusoidal positional encoding for transformer models.
+- SinusoidalPositionalEncoding(nn.Module):
+    Implements a simple additive sine-based positional encoding.
+- StochasticPositionalEncoding(nn.Module):
+    Implements stochastic positional encoding by adding Gaussian noise to learnable position embeddings.
+- EarlyStopper:
+    Utility for early stopping during training based on validation loss.
+- BaseModel(nn.Module):
+    Abstract base class for all models, providing device management, prediction, evaluation, and weight loading.
+- SauryModel(BaseModel):
+    Bayesian CNN + Transformer model with optional positional encoding for sequence regression/classification.
+- TPCNetCustomLoss(nn.Module):
+    Custom weighted MSE loss for multi-output regression.
+- TPCNetAllPhases(BaseModel):
+    Deep CNN + Transformer model inspired by TPCNet, for multi-phase sequence prediction.
+- BayesHIModel(BaseModel):
+    Highly configurable Bayesian CNN + Transformer model with flexible pooling and positional encoding.
+- RNNModel(BaseModel):
+    Transformer-based model with learnable positional embeddings and a classification head.
+- LSTMSequencePredictor(BaseModel):
+    LSTM-based sequence-to-vector model with configurable aggregation (mean, last, max).
+- LSTMSequenceToSequence(BaseModel):
+    LSTM-based sequence-to-sequence model for per-timestep regression.
+- TransformerWithAttentionAggregation(BaseModel):
+    Transformer encoder with attention-based aggregation for sequence regression.
+- SimpleCNN(BaseModel):
+    Configurable deep CNN for sequence regression/classification.
+- SimpleBNN(BaseModel):
+    Configurable deep Bayesian CNN for sequence regression/classification.
+Key Methods:
+------------
+- forward(x):
+    Defines the forward pass for each model.
+- preprocess_inputs(x):
+    Preprocesses input tensors for model compatibility.
+- fit(train_loader, val_loader, checkpoint_path, ...):
+    Trains the model with optional early stopping and learning rate scheduling.
+- evaluate(loader, criterion):
+    Evaluates the model on a given data loader.
+- load_weights(path):
+    Loads model weights from a file.
+Notes:
+------
+- Most models expect input tensors of shape (batch_size, 1, 256).
+- Bayesian models use torchbnn for Bayesian layers and KL-divergence regularization.
+- The module supports saving and loading model checkpoints.
+- Some models include custom loss functions and training logic.
+Dependencies:
+-------------
+- torch, torch.nn, torch.optim, torchbnn, tqdm, math, pathlib, sys, time
+"""
+
 import math
+from pathlib import Path
 import sys
 import time
-import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torchbnn as bnn
 from tqdm import tqdm
-from pathlib import Path
 
 root_dir = Path(__file__).resolve().parent
 
@@ -33,7 +91,7 @@ class PositionalEncoding(nn.Module):
         """
         x = x + self.pe[:x.size(0)]
         return self.dropout(x)
-    
+
 class SinusoidalPositionalEncoding(nn.Module):
     '''
     Sinusoidal positional encoding from TPCNet.
@@ -46,7 +104,7 @@ class SinusoidalPositionalEncoding(nn.Module):
         pe = torch.zeros(1, 1, 1, max_len)
         pe[:, :, :, :] = torch.sin(torch.arange(max_len).float())
         self.register_buffer('pe', pe, persistent=False)
-        
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Arguments:
@@ -66,16 +124,16 @@ class StochasticPositionalEncoding(nn.Module):
         noise = torch.randn_like(self.pe[:x.size(1), :]) * self.std
         return x + (self.pe[:x.size(1), :] + noise).unsqueeze(0).to(x.device)
 
-class earlyStopper:
+class EarlyStopper:
     def __init__(self, patience, tol):
         self.patience = patience
         self.tol = tol
         self.counter = 0
-        self.bestLoss = float('inf')
+        self.best_loss = float('inf')
 
     def check(self, loss):
-        if loss < self.bestLoss - self.tol:
-            self.bestLoss = loss
+        if loss < self.best_loss - self.tol:
+            self.best_loss = loss
             self.counter = 0
         else:
             self.counter += 1
@@ -93,7 +151,7 @@ class BaseModel(nn.Module):
         self.to(self.device)
         self.verbose = verbose
         self.default_weights_path = None  # to be set in subclasses if pretrained weights are available
-        
+
     def preprocess_inputs(self, x):
         """ Default implementation. Override in subclasses if needed. """
         return x.to(self.device)
@@ -140,7 +198,7 @@ class BaseModel(nn.Module):
         self.to(self.device)
         print('Model loaded successfully')
 
-class saury_model(BaseModel):
+class SauryModel(BaseModel):
     def __init__(self, cnnBlocks=1, kernelNumber=12, kernelWidth=51, MHANumber=4, transformerNumber=1, priorMu=0.0, priorSigma=0.01, posEncType='off'):
         super().__init__()
         self.default_weights_path = root_dir / 'weights/saury.pth'
@@ -224,7 +282,7 @@ class saury_model(BaseModel):
         criterion = self.lossFunction
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -297,14 +355,13 @@ class TPCNetCustomLoss(nn.Module):
 
         return total_loss
 
-class tpcnet_all_phases(BaseModel):
+class TPCNetAllPhases(BaseModel):
     def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0.):
         super().__init__()
         self.default_weights_path = root_dir / 'weights/tpcnet.pth'
 
         p = [0, 0] # padding
         d = [1, 1] # dilation
-        k = [1, 7] # kernel size for small layers
         s = [1, 1] # stride
                 
         self.num_features = 54
@@ -509,7 +566,7 @@ class tpcnet_all_phases(BaseModel):
         criterion = self.loss_fcn
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
         # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[nEpochs//2], gamma=0.1, last_epoch=-1)
-        # earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -552,7 +609,7 @@ class tpcnet_all_phases(BaseModel):
             valLoss = self.evaluate(val_loader, nn.MSELoss())
             valErrors.append(valLoss)
             
-            if trainLoss == np.NaN or valLoss == np.NaN:
+            if math.isnan(trainLoss) or math.isnan(valLoss):
                 print('NaN loss detected, stopping training')
                 break
             
@@ -576,7 +633,7 @@ class tpcnet_all_phases(BaseModel):
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
-class bayeshi_model(BaseModel):
+class BayesHIModel(BaseModel):
     def __init__(self, cnnBlocks: int = 1, kernelNumber: int = 8, kernelWidth1: int = 31, kernelWidth2: int = 3, kernelMult: float = 2.0, pooling: str = 'off', MHANumber: int = 4, transformerNumber: int = 1, priorMu: float = 0.0, priorSigma: float = 0.01, posEncType: str = 'sinusoidal'):
         super().__init__()
         self.default_weights_path = root_dir / 'weights/bayeshi.pth'
@@ -712,7 +769,7 @@ class bayeshi_model(BaseModel):
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
         if early_stop:
-            earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+            earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -773,7 +830,7 @@ class bayeshi_model(BaseModel):
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
-class rnn_model(BaseModel):
+class RNNModel(BaseModel):
     def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4, output_dim=4):
         super().__init__()
         self.default_weights_path = None
@@ -828,7 +885,7 @@ class rnn_model(BaseModel):
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -928,7 +985,7 @@ class LSTMSequencePredictor(BaseModel):
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1020,7 +1077,7 @@ class LSTMSequenceToSequence(BaseModel):
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1120,7 +1177,7 @@ class TransformerWithAttentionAggregation(BaseModel):
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
         trainErrors = []
         valErrors = []
         epochTimes = []

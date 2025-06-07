@@ -1,11 +1,25 @@
+"""
+Module providing a configuration dictionary for various neural network models and a utility function to instantiate them with specified parameters.
+Attributes:
+    MODEL_CONFIGS (dict): A dictionary mapping model names to their corresponding classes and default initialization parameters.
+Functions:
+    load_model(model_name, **kwargs):
+        Instantiates and returns a model based on the provided model name and optional parameter overrides.
+        Args:
+            model_name (str): The key identifying the model to load from MODEL_CONFIGS.
+            **kwargs: Additional keyword arguments to override or supplement the default model parameters.
+        Returns:
+            An instance of the specified model class, initialized with the combined parameters.
+        Raises:
+            ValueError: If the provided model_name does not exist in MODEL_CONFIGS.
+"""
+
 import copy
-from typing import overload, Literal
-import torch
-from .models import saury_model, bayeshi_model, tpcnet_all_phases, rnn_model, LSTMSequencePredictor, TransformerWithAttentionAggregation, SimpleCNN, SimpleBNN, LSTMSequenceToSequence
+from .models import SauryModel, BayesHIModel, TPCNetAllPhases, RNNModel, LSTMSequencePredictor, TransformerWithAttentionAggregation, SimpleCNN, SimpleBNN, LSTMSequenceToSequence
 
 MODEL_CONFIGS = {
     'saury': {
-        'class': saury_model,
+        'class': SauryModel,
         'params': {
             'cnnBlocks': 1,
             'kernelNumber': 12,
@@ -18,7 +32,7 @@ MODEL_CONFIGS = {
         }
     },
     'bayeshi': {
-        'class': bayeshi_model,
+        'class': BayesHIModel,
         'params': {
             'cnnBlocks': 1,
             'kernelNumber': 8,
@@ -34,7 +48,7 @@ MODEL_CONFIGS = {
         }
     },
     'tpcnet_all_phases': {
-        'class': tpcnet_all_phases,
+        'class': TPCNetAllPhases,
         'params':{
             'num_output': 4,
             'in_channels': 1,
@@ -43,7 +57,7 @@ MODEL_CONFIGS = {
         }
     },
     'rnn_model': {
-        'class': rnn_model,
+        'class': RNNModel,
         'params': {
             'input_dim': 1,
             'seq_len': 256,
@@ -75,31 +89,30 @@ MODEL_CONFIGS = {
     }
 }
 
-# # Use overloads to provide tooltips for the load_model function
-# @overload
-# def load_model(model_name: Literal['saury'], **kwargs) -> saury_model: ...
-# @overload
-# def load_model(model_name: Literal['bayeshi'], **kwargs) -> bayeshi_model: ...
-# @overload
-# def load_model(model_name: Literal['tpcnet_all_phases'], **kwargs) -> tpcnet_all_phases: ...
-# @overload
-# def load_model(model_name: Literal['rnn_model'], **kwargs) -> rnn_model: ...
-# @overload
-# def load_model(model_name: Literal['LSTMSequencePredictor'], **kwargs) -> LSTMSequencePredictor: ...
-# @overload
-# def load_model(model_name: Literal['TransformerWithAttentionAggregation'], **kwargs) -> TransformerWithAttentionAggregation: ...
-
 def load_model(model_name, **kwargs):
+    """
+    Loads and initializes a model based on the specified model name.
+    Parameters:
+        model_name (str): The name of the model to load. Must be a key in the MODEL_CONFIGS dictionary.
+        **kwargs: Additional keyword arguments to override or supplement the default model parameters.
+    Returns:
+        object: An instance of the specified model class, initialized with the combined parameters.
+    Raises:
+        ValueError: If the specified model_name is not found in MODEL_CONFIGS.
+    Notes:
+        - The function does not modify the original MODEL_CONFIGS dictionary.
+        - The model is initialized with parameters from MODEL_CONFIGS[model_name]['params'], updated with any provided kwargs.
+    """
+
     if model_name not in MODEL_CONFIGS:
         raise ValueError(f"Model {model_name} not found. Available models: {list(MODEL_CONFIGS.keys())}")
 
-    
     config = MODEL_CONFIGS[model_name]
     model_class = config['class']
     # Update model parameters with any additional kwargs provided but don't change the actual dictionary
     params = copy.deepcopy(config['params'])
     params.update(kwargs)
-    
+
     # model = model_class(**params, device='cuda' if torch.cuda.is_available() else 'cpu')
     model = model_class(**params)
 
