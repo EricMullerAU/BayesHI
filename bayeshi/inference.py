@@ -1,7 +1,7 @@
 import copy
 from typing import overload, Literal
 import torch
-from .models import saury_model, bayeshi_model, tpcnet_all_phases, rnn_model, LSTMSequencePredictor, TransformerWithAttentionAggregation, SimpleCNN, SimpleBNN, LSTMSequenceToSequence
+from .models import saury_model, bayeshi_model, tpcnet_all_phases, rnn_model, LSTMSequencePredictor, TransformerWithAttentionAggregation, SimpleCNN, SimpleBNN, LSTMSequenceToSequence, BLSTMSequenceToSequence
 
 MODEL_CONFIGS = {
     'saury': {
@@ -71,6 +71,10 @@ MODEL_CONFIGS = {
     },
     'LSTMSequenceToSequence': {
         'class': LSTMSequenceToSequence,
+        'params': {}
+    },
+    'BLSTMSequenceToSequence': {
+        'class': BLSTMSequenceToSequence,
         'params': {}
     }
 }
