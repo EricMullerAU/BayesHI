@@ -211,7 +211,7 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
     y_data = np.concatenate(y_arrays, axis=0) if y_arrays else np.array([])
     
       
-    y_data += np.random.randn(*y_data.shape) * noise
+    x_data += np.random.randn(*x_data.shape) * noise
     
     print('Total number of spectra:', x_data.shape[0])
 
