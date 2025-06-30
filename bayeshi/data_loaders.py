@@ -278,25 +278,33 @@ def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values
     if y_values not in ['fractions', 'absorption', 'emission']:
         raise ValueError("y_values must be either 'fractions', 'absorption', or 'emission'")
 
-    x_data = np.array([])
-    y_data = np.array([])
-    
-    for sim in sim_number:
+    # x_data = np.array([])
+    # y_data = np.array([])
+    # Preallocate arrays to hold data
+    # All TIGRESS cubes are 256 x 256 x 512 (v, z, x)
+    total_spectra = len(sim_number) * 256 * 512
+    x_data = np.empty((total_spectra, 256))  # 256 channels
+    if y_values == 'fractions':
+        y_data = np.empty((total_spectra, 4))
+    else:
+        y_data = np.empty((total_spectra, 256))
+            
+    for i, sim in enumerate(sim_number):
         if x_values == 'emission':
             spectra = fits.getdata(data_path + f'{sim}_Tb_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
         elif x_values == 'absorption':
             spectra = fits.getdata(data_path + f'{sim}_Tau_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
         else:
             raise ValueError("x_values must be either 'emission' or 'absorption'")
-        
+                
         # Change from (v, z, x) to (x*z, v)
         spectra = np.moveaxis(spectra, 0, -1)
         spectra = spectra.reshape(-1, spectra.shape[-1])
         
-        if x_data.size == 0:
-            x_data = spectra
-        else:
-            x_data = np.append(x_data, spectra, axis=0)
+        # Add the spectra to x_data
+        start_idx = (i * 256 * 512)
+        end_idx = start_idx + spectra.shape[0]
+        x_data[start_idx:end_idx, :] = spectra
         
         if y_values == 'fractions':
             fcnm = fits.getdata(data_path + f'{sim}_fcnm_FINAL.fits')[3584//2-128:3584//2+128, :]
@@ -312,21 +320,19 @@ def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values
             
         elif y_values == 'absorption':
             absorption = fits.getdata(data_path + f'{sim}_Tau_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
-            # Change from (z, x) to (x*z, 1)
-            absorption = absorption.reshape(-1, 1)
-            y_data_temp = absorption
+            # Change from (v, z, x) to (x*z, 1)
+            absorption = np.moveaxis(absorption, 0, -1)
+            y_data_temp = absorption.reshape(-1, absorption.shape[-1])
         elif y_values == 'emission':
             emission = fits.getdata(data_path + f'{sim}_Tb_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
-            # Change from (z, x) to (x*z, 1)
-            emission = emission.reshape(-1, 1)
-            y_data_temp = emission
+            # Change from (v, z, x) to (x*z, 1)
+            emission = np.moveaxis(emission, 0, -1)
+            y_data_temp = emission.reshape(-1, emission.shape[-1])
         else:
             raise ValueError("y_values must be either 'fractions', 'absorption', or 'emission'")
     
-        if y_data.size == 0:
-            y_data = y_data_temp
-        else:
-            y_data = np.append(y_data, fractions, axis=0)
+        # Add the y_data to y_data
+        y_data[start_idx:end_idx, :] = y_data_temp
             
     return x_data, y_data
 
@@ -360,12 +366,14 @@ def load_saury_data(data_path, x_values='emission', y_values='fractions'):
         
     elif y_values == 'absorption':
         absorption = fits.getdata(data_path + 'saury_Tau.fits')
-        # Change from (z, x) to (x*z, 1)
-        y_data = absorption.reshape(-1, 1)
+        # Change from (v, z, x) to (x*z, 1)
+        absorption = np.moveaxis(absorption, 0, -1)
+        y_data = absorption.reshape(-1, absorption.shape[-1])
     elif y_values == 'emission':
         emission = fits.getdata(data_path + 'saury_Tb.fits')
-        # Change from (z, x) to (x*z, 1)
-        y_data = emission.reshape(-1, 1)
+        # Change from (v, z, x) to (x*z, 1)
+        emission = np.moveaxis(emission, 0, -1)
+        y_data = emission.reshape(-1, emission.shape[-1])
     else:
         raise ValueError("y_values must be either 'fractions', 'absorption', or 'emission'")
     
@@ -418,14 +426,14 @@ def load_seta_data(data_path, sim_type='both', x_values='emission', y_values='fr
             y_data_temp = fractions
         elif y_values == 'absorption':
             absorption = fits.getdata(data_path + f'seta_{sim}_Tau.fits')
-            # Change from (z, x) to (x*z, 1)
-            absorption = absorption.reshape(-1, 1)
-            y_data_temp = absorption
+            # Change from (v, z, x) to (x*z, 1)
+            absorption = np.moveaxis(absorption, 0, -1)
+            y_data_temp = absorption.reshape(-1, absorption.shape[-1])
         elif y_values == 'emission':
             emission = fits.getdata(data_path + f'seta_{sim}_Tb.fits')
-            # Change from (z, x) to (x*z, 1)
-            emission = emission.reshape(-1, 1)
-            y_data_temp = emission
+            # Change from (v, z, x) to (x*z, 1)
+            emission = np.moveaxis(emission, 0, -1)
+            y_data_temp = emission.reshape(-1, emission.shape[-1])
         else:
             raise ValueError("y_values must be either 'fractions', 'absorption', or 'emission'")
         
