@@ -539,9 +539,9 @@ class TestDataLoader(unittest.TestCase):
              patch('bayeshi.data_loaders.load_seta_data', fixed_mock_load_seta_data):
 
             train_loader1, _, _ = load_data(split='equal', random_state=42)
-            data1 = train_loader1.dataset.tensors[0].numpy()
+            data1 = train_loader1.dataset.tensors[1].numpy()
             train_loader2, _, _ = load_data(split='equal', random_state=42)
-            data2 = train_loader2.dataset.tensors[0].numpy()
+            data2 = train_loader2.dataset.tensors[1].numpy()
             np.testing.assert_array_equal(data1, data2)
 
     # --- y_values tests ---
