@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bayeshi"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "astropy",
+    "blitz",
+    "matplotlib",
+    "numpy",
+    "scikit-learn",
+    "torch",
+    "torchbnn",
+    "tqdm"
+]
+authors = [
+    {name = "Eric G. M. Muller", email = "ericmullerau@gmail.com"}
+]
+description = "Bayesian neural networks for analysis of HI data."
+readme = "README.md" 
+license = "MIT"
+keywords = ["bayesian", "neural networks", "HI", "astrophysics", "BNN"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Astronomy"
+]
+
+[project.urls]
+Repository = "https://github.com/EricMullerAU/BayesHI.git"
+
+[tool.setuptools.packages.find]
+where = ["./bayeshi"]
