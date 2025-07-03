@@ -8,7 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "astropy",
-    "blitz",
+    "blitz-bayesian-pytorch",
     "matplotlib",
     "numpy",
     "scikit-learn",
@@ -33,5 +33,5 @@ classifiers = [
 [project.urls]
 Repository = "https://github.com/EricMullerAU/BayesHI.git"
 
-[tool.setuptools.packages.find]
-where = ["./bayeshi"]
+[tool.setuptools]
+packages = ["bayeshi"]
