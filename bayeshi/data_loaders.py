@@ -65,7 +65,9 @@ from torch.utils.data import DataLoader, TensorDataset
 def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='fractions',
               dataset='all', tigress_sim='all', seta_sim='both', split=None,
               batch_size=32, num_workers=4, noise=0.5, test_size=0.2, val_size=0.2,
-              random_state=42, show_example=False):
+              random_state=42, show_example=False, verbose=False):
+    # If you need to save space in memory and are loading a subset of the data, I recommend not using all the TIGRESS cubes.
+    # Instead, select only a few of them as loading all 11 cubes just to subsample at the end is not efficient.
 
     # Validate x_values and y_values
     if x_values not in ['emission', 'absorption']:
@@ -73,33 +75,33 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
     if y_values not in ['fractions', 'absorption', 'emission']:
         raise ValueError("y_values must be either 'fractions', 'absorption', or 'emission'")
 
-    # Initialize variables to store loaded data
+    # Create empty arrays to be overwritten as needed
     tigress_x, tigress_y = np.array([]), np.array([])
     saury_x, saury_y = np.array([]), np.array([])
     seta_x, seta_y = np.array([]), np.array([])
 
     # Load data based on dataset parameter
     if dataset == 'all':
-        tigress_x, tigress_y = load_tigress_data(data_path + 'TIGRESS/', tigress_sim, x_values, y_values)
-        saury_x, saury_y = load_saury_data(data_path + 'Saury/', x_values, y_values)
-        seta_x, seta_y = load_seta_data(data_path + 'Seta/', seta_sim, x_values, y_values)
+        tigress_x, tigress_y = load_tigress_data(data_path + 'TIGRESS/', tigress_sim, x_values, y_values, verbose=verbose)
+        saury_x, saury_y = load_saury_data(data_path + 'Saury/', x_values, y_values, verbose=verbose)
+        seta_x, seta_y = load_seta_data(data_path + 'Seta/', seta_sim, x_values, y_values, verbose=verbose)
     elif isinstance(dataset, list):
         for sim in dataset:
             if sim.startswith('tigress'):
-                tigress_x, tigress_y = load_tigress_data(data_path + 'TIGRESS/', tigress_sim, x_values, y_values)
+                tigress_x, tigress_y = load_tigress_data(data_path + 'TIGRESS/', tigress_sim, x_values, y_values, verbose=verbose)
             elif sim.startswith('saury'):
-                saury_x, saury_y = load_saury_data(data_path + 'Saury/', x_values, y_values)
+                saury_x, saury_y = load_saury_data(data_path + 'Saury/', x_values, y_values, verbose=verbose)
             elif sim.startswith('seta'):
-                seta_x, seta_y = load_seta_data(data_path + 'Seta/', seta_sim, x_values, y_values)
+                seta_x, seta_y = load_seta_data(data_path + 'Seta/', seta_sim, x_values, y_values, verbose=verbose)
             else:
                 raise ValueError(f"Unknown dataset type: {sim}")
     elif isinstance(dataset, str):
         if dataset.startswith('tigress'):
-            tigress_x, tigress_y = load_tigress_data(data_path + 'TIGRESS/', tigress_sim, x_values, y_values)
+            tigress_x, tigress_y = load_tigress_data(data_path + 'TIGRESS/', tigress_sim, x_values, y_values, verbose=verbose)
         elif dataset.startswith('saury'):
-            saury_x, saury_y = load_saury_data(data_path + 'Saury/', x_values, y_values)
+            saury_x, saury_y = load_saury_data(data_path + 'Saury/', x_values, y_values, verbose=verbose)
         elif dataset.startswith('seta'):
-            seta_x, seta_y = load_seta_data(data_path + 'Seta/', seta_sim, x_values, y_values)
+            seta_x, seta_y = load_seta_data(data_path + 'Seta/', seta_sim, x_values, y_values, verbose=verbose)
         else:
             raise ValueError(f"Unknown dataset type: {dataset}")
     else:
@@ -262,7 +264,7 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
     
     return train_loader, val_loader, test_loader
 
-def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values='fractions'):
+def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values='fractions', verbose=False):
     if sim_number == 'all':
         sim_number = np.arange(290, 391, 10)
     elif type(sim_number) is list:
@@ -288,8 +290,10 @@ def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values
         y_data = np.empty((total_spectra, 4))
     else:
         y_data = np.empty((total_spectra, 256))
-            
+    
     for i, sim in enumerate(sim_number):
+        if verbose:
+            print(f'Loading TIGRESS simulation cube {sim} ({i+1}/{len(sim_number)}) with x_values={x_values} and y_values={y_values}')
         if x_values == 'emission':
             spectra = fits.getdata(data_path + f'{sim}_Tb_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
         elif x_values == 'absorption':
@@ -336,7 +340,7 @@ def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values
             
     return x_data, y_data
 
-def load_saury_data(data_path, x_values='emission', y_values='fractions'):
+def load_saury_data(data_path, x_values='emission', y_values='fractions', verbose=False):
     if x_values not in ['emission', 'absorption']:
         raise ValueError("x_values must be either 'emission' or 'absorption'")
     if y_values not in ['fractions', 'absorption', 'emission']:
@@ -379,7 +383,7 @@ def load_saury_data(data_path, x_values='emission', y_values='fractions'):
     
     return x_data, y_data
 
-def load_seta_data(data_path, sim_type='both', x_values='emission', y_values='fractions'):
+def load_seta_data(data_path, sim_type='both', x_values='emission', y_values='fractions', verbose=False):
     if sim_type not in ['both', 'comp', 'sol']:
         raise ValueError("sim_type must be 'both', 'comp', or 'sol'")
     

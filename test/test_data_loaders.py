@@ -340,14 +340,14 @@ class TestDataLoader(unittest.TestCase):
         self.seta_data = np.random.rand(60, 256)
         self.seta_labels = np.random.rand(60, 4)
 
-    def mock_load_tigress_data(self, path, sim, x_values, y_values):
+    def mock_load_tigress_data(self, path, sim, x_values, y_values, verbose=False):
         # Return mock data with cube IDs encoded in the first column
         return self.tigress_data, self.tigress_labels
 
-    def mock_load_saury_data(self, path, x_values, y_values):
+    def mock_load_saury_data(self, path, x_values, y_values, verbose=False):
         return self.saury_data, self.saury_labels
 
-    def mock_load_seta_data(self, path, sim, x_values, y_values):
+    def mock_load_seta_data(self, path, sim, x_values, y_values, verbose=False):
         return self.seta_data, self.seta_labels
 
     def mock_data_for_y_values(self, samples, y_values, n_features=256):
@@ -527,11 +527,11 @@ class TestDataLoader(unittest.TestCase):
         # Use fixed mock data for this test
         fixed_data = np.arange(100*256, dtype=float).reshape(100, 256)
         fixed_labels = np.arange(100*4, dtype=float).reshape(100, 4)
-        def fixed_mock_load_tigress_data(path, sim, x_values, y_values):
+        def fixed_mock_load_tigress_data(path, sim, x_values, y_values, verbose=False):
             return fixed_data, fixed_labels
-        def fixed_mock_load_saury_data(path, x_values, y_values):
+        def fixed_mock_load_saury_data(path, x_values, y_values, verbose=False):
             return fixed_data[:80], fixed_labels[:80]
-        def fixed_mock_load_seta_data(path, sim, x_values, y_values):
+        def fixed_mock_load_seta_data(path, sim, x_values, y_values, verbose=False):
             return fixed_data[:60], fixed_labels[:60]
 
         with patch('bayeshi.data_loaders.load_tigress_data', fixed_mock_load_tigress_data), \
@@ -548,15 +548,15 @@ class TestDataLoader(unittest.TestCase):
 
     def test_y_values_fractions(self):
         """Test that y_data shape is (n, 4) when y_values is 'fractions'."""
-        def mock_load_tigress_data(path, sim, x_values, y_values):
+        def mock_load_tigress_data(path, sim, x_values, y_values, verbose=False):
             x = np.random.rand(100, 256)
             y = self.mock_data_for_y_values(100, y_values)
             return x, y
-        def mock_load_saury_data(path, x_values, y_values):
+        def mock_load_saury_data(path, x_values, y_values, verbose=False):
             x = np.random.rand(80, 256)
             y = self.mock_data_for_y_values(80, y_values)
             return x, y
-        def mock_load_seta_data(path, sim, x_values, y_values):
+        def mock_load_seta_data(path, sim, x_values, y_values, verbose=False):
             x = np.random.rand(60, 256)
             y = self.mock_data_for_y_values(60, y_values)
             return x, y
@@ -575,15 +575,15 @@ class TestDataLoader(unittest.TestCase):
     def test_y_values_emission_absorption(self):
         """Test that y_data shape matches x_data when y_values is 'emission' or 'absorption'."""
         for y_val in ['emission', 'absorption']:
-            def mock_load_tigress_data(path, sim, x_values, y_values):
+            def mock_load_tigress_data(path, sim, x_values, y_values, verbose=False):
                 x = np.random.rand(100, 256)
                 y = self.mock_data_for_y_values(100, y_val, 256)
                 return x, y
-            def mock_load_saury_data(path, x_values, y_values):
+            def mock_load_saury_data(path, x_values, y_values, verbose=False):
                 x = np.random.rand(80, 256)
                 y = self.mock_data_for_y_values(80, y_val, 256)
                 return x, y
-            def mock_load_seta_data(path, sim, x_values, y_values):
+            def mock_load_seta_data(path, sim, x_values, y_values, verbose=False):
                 x = np.random.rand(60, 256)
                 y = self.mock_data_for_y_values(60, y_val, 256)
                 return x, y

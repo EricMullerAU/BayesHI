@@ -237,7 +237,8 @@ class saury_model(nn.Module):
     def predict(self, test_loader, numPredictions):
         self.eval()
         allPredictions = []
-        for _ in tqdm(range(numPredictions), desc='Predicting', file=sys.stdout):
+        # for _ in tqdm(range(numPredictions), desc='Predicting', file=sys.stdout):
+        for _ in range(numPredictions):
             predictions = []
             with torch.no_grad():
                 for inputs, *_ in test_loader:
@@ -504,7 +505,8 @@ class tpcnet_all_phases(nn.Module):
             self.train()
             runningLoss = 0.0
             mse_running_loss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            for inputs, targets in train_loader:
                 inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -566,7 +568,8 @@ class tpcnet_all_phases(nn.Module):
             print('Warning: numPredictions > 1, but this model is not Bayesian, so all predictions will be the same. Re-run with numPredictions = 1 for faster inference.')
         self.eval()
         allPredictions = []
-        for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
+        # for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
+        for _ in range(numPredictions):
             predictions = []
             with torch.no_grad():
                 for inputs, *_ in test_loader:
@@ -605,11 +608,19 @@ class bayeshi_model(nn.Module):
                 cnnBlocks = i
                 break
             
+            # if i == 0:
+            #     out_channels = kernelNumber
+            # else:
+            #     out_channels = int(in_channels * kernelMult)
+            
+            
             if i == 0:
-                out_channels = kernelNumber
+                out_channels = int(convBlocks * kernelNumber)
             else:
-                out_channels = int(in_channels * kernelMult)
-            print(f'Convolutional block {i + 1}: in_channels={in_channels}, out_channels={out_channels}, kernelWidth1={kernelWidth1}, kernelWidth2={kernelWidth2}, pooling={pooling}')
+                out_channels = int(in_channels - kernelNumber)
+            out_channels2 = int(out_channels - kernelNumber)
+            
+            print(f'Convolutional block {i + 1}: in_channels={in_channels}, out_channels={out_channels2}, kernelWidth1={kernelWidth1}, kernelWidth2={kernelWidth2}, pooling={pooling}')
             self.conv_layers.append(
             bnn.BayesConv2d(
                 prior_mu=priorMu,
@@ -629,7 +640,7 @@ class bayeshi_model(nn.Module):
                 prior_mu=priorMu,
                 prior_sigma=priorSigma,
                 in_channels=out_channels,
-                out_channels=out_channels,
+                out_channels=out_channels2,
                 kernel_size=(1, kernelWidth2),
                 padding=(0, 0)
             )
@@ -639,13 +650,15 @@ class bayeshi_model(nn.Module):
             elif self.pooling == 'avg':
                 self.conv_layers.append(nn.AvgPool2d(kernel_size=(1, 2), stride=(1, 2)))
             
-            in_channels = out_channels
+            in_channels = out_channels2
             Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernelWidth1], s=[1, 1], p=[0, 0], d=[1, 1])
             if self.pooling != 'off':
                 Wout = Wout // 2
             Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernelWidth2], s=[1, 1], p=[0, 0], d=[1, 1])
             if self.pooling != 'off':
                 Wout = Wout // 2
+            if out_channels == 1:
+                break
             
         if posEncType == 'sinusoidal':
             self.positional_encoding = PositionalEncoding(d_model = out_channels)
@@ -744,7 +757,8 @@ class bayeshi_model(nn.Module):
             startTime = time.time()
             runningLoss = 0.0
             # asdf = 0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            for inputs, targets in train_loader:
                 # asdf += 1
                 # if asdf > 10:
                 #     break
@@ -809,7 +823,8 @@ class bayeshi_model(nn.Module):
     def predict(self, test_loader, numPredictions):
         self.eval()
         allPredictions = []
-        for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
+        # for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
+        for _ in range(numPredictions):
             predictions = []
             with torch.no_grad():
                 for inputs, *_ in test_loader:
@@ -897,7 +912,8 @@ class rnn_model(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            for inputs, targets in train_loader:
                 inputs = inputs.unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -1023,7 +1039,8 @@ class LSTMSequencePredictor(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            for inputs, targets in train_loader:
                 inputs = inputs.unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -1258,7 +1275,8 @@ class LSTMSequenceToSequence(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            for inputs, targets in train_loader:
                 inputs = inputs.unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -1389,7 +1407,8 @@ class BLSTMSequenceToSequence(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            for inputs, targets in train_loader:
                 inputs = inputs.unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -1440,7 +1459,8 @@ class BLSTMSequenceToSequence(nn.Module):
     def predict(self, test_loader, numPredictions):
         self.eval()
         allPredictions = []
-        for _ in tqdm(range(numPredictions), desc='Predicting', file=sys.stdout):
+        # for _ in tqdm(range(numPredictions), desc='Predicting', file=sys.stdout):
+        for _ in range(numPredictions):
             predictions = []
             with torch.no_grad():
                 for inputs, *_ in test_loader:
@@ -1522,7 +1542,8 @@ class TransformerWithAttentionAggregation(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            for inputs, targets in train_loader:
                 inputs = inputs.unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
