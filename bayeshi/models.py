@@ -1443,7 +1443,7 @@ class BLSTMSequenceToSequence(nn.Module):
             predictions = []
             with torch.no_grad():
                 for inputs, *_ in test_loader:
-                    inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
+                    inputs = inputs.unsqueeze(1).to(self.device)
                     outputs = self(inputs)
                     predictions.append(outputs)
             allPredictions.append(torch.cat(predictions, dim=0))
