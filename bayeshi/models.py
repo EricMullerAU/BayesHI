@@ -340,45 +340,6 @@ class SauryModel(BaseModel):
                     torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
-<<<<<<< HEAD
-
-    def evaluate(self, loader, criterion):
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-
-    def predict(self, test_loader, numPredictions):
-        self.eval()
-        allPredictions = []
-        # for _ in tqdm(range(numPredictions), desc='Predicting', file=sys.stdout):
-        for _ in range(numPredictions):
-            predictions = []
-            with torch.no_grad():
-                for inputs, *_ in test_loader:
-                    inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                    outputs = self(inputs)
-                    predictions.append(outputs)
-            allPredictions.append(torch.cat(predictions, dim=0))
-        return torch.stack(allPredictions, dim=0)
-
-    def load_weights(self, path = root_dir / 'weights/saury.pth'):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
-=======
->>>>>>> 6792859d35823255275a7ade925a5598fbbfb208
     
 class TPCNetCustomLoss(nn.Module):
     def __init__(self, weights=[1., 1.]):
@@ -630,15 +591,9 @@ class TPCNetAllPhases(BaseModel):
             self.train()
             runningLoss = 0.0
             mse_running_loss = 0.0
-<<<<<<< HEAD
-            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-            for inputs, targets in train_loader:
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-=======
             loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
             for inputs, targets in loop:
                 inputs = self.preprocess_inputs(inputs)
->>>>>>> 6792859d35823255275a7ade925a5598fbbfb208
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
@@ -681,51 +636,8 @@ class TPCNetAllPhases(BaseModel):
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
-<<<<<<< HEAD
-    def evaluate(self, loader, criterion):
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-
-    def predict(self, test_loader, numPredictions):
-        if numPredictions  > 1:
-            print('Warning: numPredictions > 1, but this model is not Bayesian, so all predictions will be the same. Re-run with numPredictions = 1 for faster inference.')
-        self.eval()
-        allPredictions = []
-        # for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
-        for _ in range(numPredictions):
-            predictions = []
-            with torch.no_grad():
-                for inputs, *_ in test_loader:
-                    inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                    outputs = self(inputs)
-                    predictions.append(outputs)
-            allPredictions.append(torch.cat(predictions, dim=0))
-        return torch.stack(allPredictions, dim=0)
-
-    def load_weights(self, path = root_dir / 'weights/tpcnet.pth'):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
-
-class bayeshi_model(nn.Module):
-    def __init__(self, cnnBlocks: int = 1, kernelNumber: int = 8, kernelWidth1: int = 31, kernelWidth2: int = 3, kernelMult: float = 2.0, pooling: str = 'off', MHANumber: int = 4, transformerNumber: int = 1, priorMu: float = 0.0, priorSigma: float = 0.01, posEncType: str = 'sinusoidal', device: str = 'cpu'):
-=======
 class BayesHIModel(BaseModel):
     def __init__(self, cnnBlocks: int = 1, kernelNumber: int = 8, kernelWidth1: int = 31, kernelWidth2: int = 3, kernelMult: float = 2.0, pooling: str = 'off', MHANumber: int = 4, transformerNumber: int = 1, priorMu: float = 0.0, priorSigma: float = 0.01, posEncType: str = 'sinusoidal'):
->>>>>>> 6792859d35823255275a7ade925a5598fbbfb208
         super().__init__()
         self.default_weights_path = root_dir / 'weights/bayeshi.pth'
         
@@ -894,19 +806,9 @@ class BayesHIModel(BaseModel):
             KLweight = maxKLweight * min(1, epoch / maxKLepoch)
             startTime = time.time()
             runningLoss = 0.0
-<<<<<<< HEAD
-            # asdf = 0
-            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-            for inputs, targets in train_loader:
-                # asdf += 1
-                # if asdf > 10:
-                #     break
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-=======
             loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
             for inputs, targets in loop:
                 inputs = self.preprocess_inputs(inputs)
->>>>>>> 6792859d35823255275a7ade925a5598fbbfb208
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
@@ -941,51 +843,8 @@ class BayesHIModel(BaseModel):
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
-<<<<<<< HEAD
-    def evaluate(self, loader, criterion=None):
-        criterion = nn.MSELoss() if criterion is None else criterion
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-
-    def predict(self, test_loader, numPredictions):
-        self.eval()
-        allPredictions = []
-        # for _ in tqdm(range(numPredictions), file=sys.stdout, desc='Predicting'):
-        for _ in range(numPredictions):
-            predictions = []
-            with torch.no_grad():
-                for inputs, *_ in test_loader:
-                    inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                    outputs = self(inputs)
-                    predictions.append(outputs)
-            allPredictions.append(torch.cat(predictions, dim=0))
-        return torch.stack(allPredictions, dim=0)
-
-    def load_weights(self, path = root_dir / 'weights/tigress.pth'):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
-
-class rnn_model(nn.Module):
-    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4,
-                 output_dim=4, device='cpu'):
-=======
 class RNNModel(BaseModel):
     def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4, output_dim=4):
->>>>>>> 6792859d35823255275a7ade925a5598fbbfb208
         super().__init__()
         self.default_weights_path = None
 
@@ -1056,15 +915,9 @@ class RNNModel(BaseModel):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-<<<<<<< HEAD
-            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-            for inputs, targets in train_loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-=======
             loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
             for inputs, targets in loop:
                 inputs = self.preprocess_inputs(inputs)
->>>>>>> 6792859d35823255275a7ade925a5598fbbfb208
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
@@ -1162,15 +1015,9 @@ class LSTMSequencePredictor(BaseModel):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-<<<<<<< HEAD
-            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-            for inputs, targets in train_loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-=======
             loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
             for inputs, targets in loop:
                 inputs = self.preprocess_inputs(inputs)
->>>>>>> 6792859d35823255275a7ade925a5598fbbfb208
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs, _ = self(inputs)
@@ -1407,15 +1254,9 @@ class LSTMSequenceToSequence(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-<<<<<<< HEAD
-            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-            for inputs, targets in train_loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-=======
             loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
             for inputs, targets in loop:
                 inputs = self.preprocess_inputs(inputs)
->>>>>>> 6792859d35823255275a7ade925a5598fbbfb208
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
@@ -1683,15 +1524,9 @@ class TransformerWithAttentionAggregation(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-<<<<<<< HEAD
-            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-            for inputs, targets in train_loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-=======
             loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
             for inputs, targets in loop:
                 inputs = self.preprocess_inputs(inputs)
->>>>>>> 6792859d35823255275a7ade925a5598fbbfb208
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs, _, _ = self(inputs)
