@@ -151,7 +151,6 @@ class BaseModel(nn.Module):
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.device = torch.device(device)
-        self.to(self.device)
         self.verbose = verbose
         self.default_weights_path = None  # to be set in subclasses if pretrained weights are available
 
@@ -202,8 +201,8 @@ class BaseModel(nn.Module):
         print('Model loaded successfully')
 
 class SauryModel(BaseModel):
-    def __init__(self, cnn_blocks=1, kernel_number=12, kernel_width=51, mha_number=4, transformer_number=1, prior_mu=0.0, prior_sigma=0.01, pos_enc_type='off'):
-        super().__init__(self, device, verbose)
+    def __init__(self, cnn_blocks=1, kernel_number=12, kernel_width=51, mha_number=4, transformer_number=1, prior_mu=0.0, prior_sigma=0.01, pos_enc_type='off', **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = root_dir / 'weights/saury.pth'
         
         # Convolutional layers
@@ -251,6 +250,9 @@ class SauryModel(BaseModel):
         self.flatten = nn.Flatten()
         self.decoder = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma,
                                         in_features=kernel_number * Wout, out_features=4)
+    
+        self.to(self.device)
+
 
     def forward(self, x):
         for conv in self.conv_layers:
@@ -359,8 +361,8 @@ class TPCNetCustomLoss(nn.Module):
         return total_loss
 
 class TPCNetAllPhases(BaseModel):
-    def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0.):
-        super().__init__(self, device, verbose)
+    def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0., **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = root_dir / 'weights/tpcnet.pth'
 
         p = [0, 0] # padding
@@ -473,6 +475,9 @@ class TPCNetAllPhases(BaseModel):
                 m.bias.data.zero_()
             elif isinstance(m, nn.Linear):
                 m.bias.data.zero_()
+                
+        self.to(self.device)
+
 
     def forward(self, x):
         x =  self.spec_pos_encoder(x)
@@ -637,8 +642,8 @@ class TPCNetAllPhases(BaseModel):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class BayesHIModel(BaseModel):
-    def __init__(self, cnn_blocks: int = 1, kernel_number: int = 8, kernel_width1: int = 31, kernel_width2: int = 3, kernel_mult: float = 2.0, pooling: str = 'off', mha_number: int = 4, transformer_number: int = 1, prior_mu: float = 0.0, prior_sigma: float = 0.01, pos_enc_type: str = 'sinusoidal'):
-        super().__init__(self, device, verbose)
+    def __init__(self, cnn_blocks: int = 1, kernel_number: int = 8, kernel_width1: int = 31, kernel_width2: int = 3, kernel_mult: float = 2.0, pooling: str = 'off', mha_number: int = 4, transformer_number: int = 1, prior_mu: float = 0.0, prior_sigma: float = 0.01, pos_enc_type: str = 'sinusoidal', **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = root_dir / 'weights/bayeshi.pth'
         
         self.pooling = pooling
@@ -735,6 +740,7 @@ class BayesHIModel(BaseModel):
         if self.decoder.bias_mu is not None:
             nn.init.zeros_(self.decoder.bias_mu)
         
+        self.to(self.device)
 
     def forward(self, x):
         for layer in self.conv_layers:
@@ -844,8 +850,8 @@ class BayesHIModel(BaseModel):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class RNNModel(BaseModel):
-    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4, output_dim=4):
-        super().__init__(self, device, verbose)
+    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4, output_dim=4, **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = None
 
         # Embed scalar inputs to d_model dimension
@@ -951,8 +957,8 @@ class RNNModel(BaseModel):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class LSTMSequencePredictor(BaseModel):
-    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=4, aggregation='mean'):
-        super().__init__(self, device, verbose)
+    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=4, aggregation='mean', **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = None
 
         self.aggregation = aggregation
@@ -1191,8 +1197,8 @@ class SAMLoss(nn.Module):
             return angles
 
 class LSTMSequenceToSequence(BaseModel):
-    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=1):
-        super().__init__(self, device, verbose)
+    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=1, **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = root_dir / 'weights/lstm_seq2seq.pth'
         
         self.embedding = nn.Linear(input_dim, hidden_dim)
@@ -1201,6 +1207,8 @@ class LSTMSequenceToSequence(BaseModel):
         self.head = nn.Linear(hidden_dim, output_dim)
 
         # self.refiner = SpectralRefiner().to(self.device)
+        
+        self.to(self.device)
 
     def forward(self, x):
         """
@@ -1320,10 +1328,9 @@ class LSTMSequenceToSequence(BaseModel):
     #     print('Model loaded successfully')
 
 @variational_estimator
-class BLSTMSequenceToSequence(nn.Module):
-    def __init__(self, input_dim=1, hidden_dim=128, prior_sigma=0.1, num_layers=2, output_dim=1, device='cpu'):
-        super().__init__()
-        self.device = torch.device(device)
+class BLSTMSequenceToSequence(BaseModel):
+    def __init__(self, input_dim=1, hidden_dim=128, prior_sigma=0.1, num_layers=2, output_dim=1, **kwargs):
+        super().__init__(**kwargs)
 
         # self.embedding = nn.Linear(input_dim, hidden_dim)
         self.embedding = bnn.BayesLinear(prior_mu=0., prior_sigma=prior_sigma, in_features=input_dim, out_features=hidden_dim)
@@ -1333,9 +1340,9 @@ class BLSTMSequenceToSequence(nn.Module):
         # self.head = nn.Linear(hidden_dim, output_dim)
         self.head = bnn.BayesLinear(prior_mu=0., prior_sigma=prior_sigma, in_features=hidden_dim, out_features=output_dim)
 
-        self.to(self.device)
-        
         # self.refiner = SpectralRefiner().to(self.device)
+
+        self.to(self.device)
 
     def forward(self, x):
         """
@@ -1384,8 +1391,8 @@ class BLSTMSequenceToSequence(nn.Module):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            # for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
-            for inputs, targets in train_loader:
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
                 inputs = inputs.unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
@@ -1420,41 +1427,9 @@ class BLSTMSequenceToSequence(nn.Module):
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
     
-    def evaluate(self, loader, criterion=nn.MSELoss()):
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-    
-    def predict(self, test_loader, n_predictions):
-        self.eval()
-        allPredictions = []
-        # for _ in tqdm(range(n_predictions), desc='Predicting', file=sys.stdout):
-        for _ in range(n_predictions):
-            predictions = []
-            with torch.no_grad():
-                for inputs, *_ in test_loader:
-                    inputs = inputs.unsqueeze(1).to(self.device)
-                    outputs = self(inputs)
-                    predictions.append(outputs)
-            allPredictions.append(torch.cat(predictions, dim=0))
-        return torch.stack(allPredictions, dim=0)
-
-    def load_weights(self, path):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
+        return x.unsqueeze(1).to(self.device)
 
 
 class TransformerWithAttentionAggregation(nn.Module):
@@ -1558,8 +1533,8 @@ class TransformerWithAttentionAggregation(nn.Module):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class SimpleCNN(BaseModel):
-    def __init__(self, cnn_blocks):
-        super().__init__(self, device, verbose)
+    def __init__(self, cnn_blocks, **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = None
 
         self.cnn_blocks = cnn_blocks
@@ -1625,6 +1600,8 @@ class SimpleCNN(BaseModel):
                 m.bias.data.zero_()
             elif isinstance(m, nn.Linear):
                 m.bias.data.zero_()
+
+        self.to(self.device)
 
     def forward(self, x):
         for layer in self.conv_layers:
@@ -1704,8 +1681,8 @@ class SimpleCNN(BaseModel):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class SimpleBNN(BaseModel):
-    def __init__(self, cnn_blocks, prior_mu, prior_sigma, kl_weight = 0.01):
-        super().__init__(self, device, verbose)
+    def __init__(self, cnn_blocks, prior_mu, prior_sigma, kl_weight = 0.01, **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = None
         
         self.cnn_blocks = cnn_blocks
@@ -1779,6 +1756,8 @@ class SimpleBNN(BaseModel):
         #         m.bias.data.zero_()
         #     elif isinstance(m, nn.Linear):
         #         m.bias.data.zero_()
+        
+        self.to(self.device)
 
     def forward(self, x):
         for layer in self.conv_layers:
