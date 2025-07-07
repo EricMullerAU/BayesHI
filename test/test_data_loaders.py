@@ -293,5 +293,40 @@ class TestDataLoader(unittest.TestCase):
                 self.assertEqual(val_loader.dataset.tensors[1].shape[1], 256)
                 self.assertEqual(test_loader.dataset.tensors[1].shape[1], 256)
 
+    def test_shapes(self):
+        """Test that the x and y data shapes are (n_samples, 4) and (n_samples, 256) for fractions or emission/absorption respectively."""
+        for x_val in ['emission', 'absorption']:
+            for y_val in ['fractions', 'emission', 'absorption']:
+                
+                n_spectra = 200
+                target_n_spectra = round((1 - 0.05 - 0.05) * n_spectra)
+                torch_loader, *_ = load_data(dataset='saury', x_values=x_val, y_values=y_val, split=n_spectra, test_size = 0.05, val_size = 0.05)
+                x_data, y_data = torch_loader.dataset.tensors
+                if y_val == 'fractions':
+                    self.assertEqual(x_data.shape, (target_n_spectra, 256))
+                    self.assertEqual(y_data.shape, (target_n_spectra, 4))
+                elif y_val in ['emission', 'absorption']:
+                    self.assertEqual(x_data.shape, (target_n_spectra, 256))
+                    self.assertEqual(y_data.shape, (target_n_spectra, 256))
+    
+    def test_train_val_test_split(self):
+        """Test that train, val, and test splits are correctly sized."""
+        for test_split in [0.05, 0.1, 0.5]:
+            for val_split in [0.05, 0.1, 0.5]:
+                if test_split + val_split >= 1.0:
+                    with self.assertRaises(ValueError):
+                        load_data(
+                            dataset='saury', split=200, test_size=test_split, val_size=val_split
+                        )
+                else:
+                    train_loader, val_loader, test_loader = load_data(
+                        dataset='saury', split=200, test_size=test_split, val_size=val_split
+                    )
+                    total_samples = len(train_loader.dataset) + len(val_loader.dataset) + len(test_loader.dataset)
+                    self.assertEqual(total_samples, 200)
+                    self.assertEqual(len(train_loader.dataset), round(200 - (200 * (test_split + val_split))))
+                    self.assertEqual(len(val_loader.dataset), round(200 * val_split))
+                    self.assertEqual(len(test_loader.dataset), round(200 * test_split))
+
 if __name__ == '__main__':
     unittest.main()

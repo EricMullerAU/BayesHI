@@ -230,13 +230,20 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
     # print(f'Removed {los_removed} lines of sight with NaNs')
     
     # Split the data into training, validation, and testing sets
-    train_pct = int((1 - test_size - val_size) * 100)
-    val_pct = int(val_size * 100)
-    test_pct = int(test_size * 100)
+    train_pct = round((1 - test_size - val_size) * 100)
+    val_pct = round(val_size * 100)
+    test_pct = round(test_size * 100)
+    
+    n_train_samples = round(x_data.shape[0] * (1 - test_size - val_size))
+    n_val_samples = round(x_data.shape[0] * val_size)
+    n_test_samples = round(x_data.shape[0] * test_size)
+    
+    if n_train_samples < 1 or n_val_samples < 1 or n_test_samples < 1:
+        raise ValueError("The defined splits result in one or more datasets with less than one sample.")
     
     print(f'Splitting data into {train_pct}% train, {val_pct}% validation, and {test_pct}% test sets.')
-    X_train, X_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=test_size + val_size, random_state=random_state)
-    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=test_size / (test_size + val_size), random_state=random_state)
+    X_train, X_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=n_val_samples+n_test_samples, random_state=random_state)
+    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=n_test_samples / (n_val_samples+n_test_samples), random_state=random_state)
     
     train_dataset = TensorDataset(Tensor(X_train), Tensor(y_train))
     val_dataset = TensorDataset(Tensor(X_val), Tensor(y_val))
@@ -325,12 +332,12 @@ def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values
             
         elif y_values == 'absorption':
             absorption = fits.getdata(data_path + f'{sim}_Tau_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
-            # Change from (v, z, x) to (x*z, 1)
+            # Change from (v, z, x) to (x*z, v)
             absorption = np.moveaxis(absorption, 0, -1)
             y_data_temp = absorption.reshape(-1, absorption.shape[-1])
         elif y_values == 'emission':
             emission = fits.getdata(data_path + f'{sim}_Tb_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
-            # Change from (v, z, x) to (x*z, 1)
+            # Change from (v, z, x) to (x*z, v)
             emission = np.moveaxis(emission, 0, -1)
             y_data_temp = emission.reshape(-1, emission.shape[-1])
         else:

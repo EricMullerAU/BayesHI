@@ -1,12 +1,21 @@
 import unittest
 from unittest.mock import patch
-from  bayeshi.data_loaders import load_data
+from bayeshi import load_model
+from torch import randn
 
-def test_split_dict_proportion(self):
-    split_dict = {'tigress': 0.5, 'saury': 0.3, 'seta': 0.2}
-    with patch('bayeshi.data_loaders.load_tigress_data', self.mock_load_tigress_data), \
-         patch('bayeshi.data_loaders.load_saury_data', self.mock_load_saury_data), \
-         patch('bayeshi.data_loaders.load_seta_data', self.mock_load_seta_data):
-        train_loader, val_loader, test_loader = load_data(dataset='all', split=split_dict, random_state=42)
-        total_samples = sum(len(loader.dataset) for loader in [train_loader, val_loader, test_loader])
-        self.assertGreater(total_samples, 0)
+# Test the shape handling of all the models, using a simple dummy input tensor
+class TestModels(unittest.TestCase):
+    def setUp(self):
+        pass
+        
+    def test_dimension_handling(self):
+        model = load_model('BLSTMSequenceToSequence')
+        test_input = randn(16, 1, 256)  # Batch size of 10, sequence length of 256, 1 feature
+
+        output = model(test_input)
+        self.assertEqual(output.shape, (16, 256))  # Assuming the output shape is the same as input
+        
+        test_loader = [(test_input, randn(16, 256))]  # Dummy target tensor
+
+        prediction = model.predict(test_loader, numPredictions=1)
+        self.assertEqual(prediction.shape, (16, 256))  # Assuming the prediction shape is the same as input
