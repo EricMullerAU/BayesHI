@@ -16,6 +16,7 @@ Functions:
 
 import copy
 from .models import SauryModel, BayesHIModel, TPCNetAllPhases, RNNModel, LSTMSequencePredictor, TransformerWithAttentionAggregation, SimpleCNN, SimpleBNN, LSTMSequenceToSequence, BLSTMSequenceToSequence
+from torch.cuda import is_available
 
 MODEL_CONFIGS = {
     'saury': {
@@ -117,7 +118,6 @@ def load_model(model_name, **kwargs):
     params = copy.deepcopy(config['params'])
     params.update(kwargs)
 
-    # model = model_class(**params, device='cuda' if torch.cuda.is_available() else 'cpu')
     model = model_class(**params)
 
     return model

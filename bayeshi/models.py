@@ -159,10 +159,10 @@ class BaseModel(nn.Module):
         """ Default implementation. Override in subclasses if needed. """
         return x.to(self.device)
 
-    def predict(self, test_loader, num_predictions=1):
+    def predict(self, test_loader, n_predictions=1):
         self.eval()
         all_predictions = []
-        loop = tqdm(range(num_predictions), desc='Predicting', file=sys.stdout) if self.verbose else range(num_predictions)
+        loop = tqdm(range(n_predictions), desc='Predicting', file=sys.stdout) if self.verbose else range(n_predictions)
         for _ in loop:
             predictions = []
             with torch.no_grad():
@@ -202,8 +202,8 @@ class BaseModel(nn.Module):
         print('Model loaded successfully')
 
 class SauryModel(BaseModel):
-    def __init__(self, cnnBlocks=1, kernelNumber=12, kernelWidth=51, MHANumber=4, transformerNumber=1, priorMu=0.0, priorSigma=0.01, posEncType='off'):
-        super().__init__()
+    def __init__(self, cnn_blocks=1, kernel_number=12, kernel_width=51, mha_number=4, transformer_number=1, prior_mu=0.0, prior_sigma=0.01, pos_enc_type='off'):
+        super().__init__(self, device, verbose)
         self.default_weights_path = root_dir / 'weights/saury.pth'
         
         # Convolutional layers
@@ -211,22 +211,22 @@ class SauryModel(BaseModel):
         self.pool_layers = nn.ModuleList()
         in_channels = 1
         Hout, Wout = 1, 256  # Initial input size
-        for i in range(cnnBlocks):
+        for i in range(cnn_blocks):
             self.conv_layers.append(
             bnn.BayesConv2d(
-                prior_mu=priorMu,
-                prior_sigma=priorSigma,
+                prior_mu=prior_mu,
+                prior_sigma=prior_sigma,
                 in_channels=in_channels,
                 out_channels=12*(i+1),
-                kernel_size=(1, kernelWidth),
+                kernel_size=(1, kernel_width),
                 padding=(0, 0)
             )
             )
             self.conv_layers.append(nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2)))
             self.conv_layers.append(
             bnn.BayesConv2d(
-                prior_mu=priorMu,
-                prior_sigma=priorSigma,
+                prior_mu=prior_mu,
+                prior_sigma=prior_sigma,
                 in_channels=12*(i+1),
                 out_channels=12*(i+1),
                 kernel_size=(1, 7),
@@ -234,23 +234,23 @@ class SauryModel(BaseModel):
             )
             )
             in_channels = 12*(i+1)
-            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernelWidth], s=[1, 1], p=[0, 0], d=[1, 1])
+            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernel_width], s=[1, 1], p=[0, 0], d=[1, 1])
             Wout = int(Wout / 2)
             Hout, Wout = self.get_output_size(Hout, Wout, k=[1, 7], s=[1, 1], p=[0, 0], d=[1, 1])
             
-        if posEncType == 'sinusoidal':
-            self.positional_encoding = PositionalEncoding(d_model=kernelNumber)
-        elif posEncType == 'stochastic':
-            self.positional_encoding = StochasticPositionalEncoding(d_model=kernelNumber)
+        if pos_enc_type == 'sinusoidal':
+            self.positional_encoding = PositionalEncoding(d_model=kernel_number)
+        elif pos_enc_type == 'stochastic':
+            self.positional_encoding = StochasticPositionalEncoding(d_model=kernel_number)
         else:
             self.positional_encoding = None
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=kernelNumber, nhead=MHANumber, batch_first=False),
-            num_layers=transformerNumber
+            nn.TransformerEncoderLayer(d_model=kernel_number, nhead=mha_number, batch_first=False),
+            num_layers=transformer_number
         )
         self.flatten = nn.Flatten()
-        self.decoder = bnn.BayesLinear(prior_mu=priorMu, prior_sigma=priorSigma,
-                                        in_features=kernelNumber * Wout, out_features=4)
+        self.decoder = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma,
+                                        in_features=kernel_number * Wout, out_features=4)
 
     def forward(self, x):
         for conv in self.conv_layers:
@@ -275,17 +275,17 @@ class SauryModel(BaseModel):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
 
-    def lossFunction(self, outputs, targets, KLweight):
+    def lossFunction(self, outputs, targets, kl_weight):
         MSE = nn.MSELoss()
         BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
-        return MSE(outputs, targets) + KLweight * BKLoss(self)
+        return MSE(outputs, targets) + kl_weight * BKLoss(self)
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 50, learningRate = 0.0005, schedulerStep = 15, stopperPatience = 5, stopperTol = 1e-4, maxKLweight = 0.01, maxKLepoch = 50):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs = 50, learning_rate = 0.0005, scheduler_step = 15, stopper_patience = 5, stopper_tol = 1e-4, max_kl_weight = 0.01, max_kl_epoch = 50):
         self.to(self.device)
         criterion = self.lossFunction
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -300,8 +300,8 @@ class SauryModel(BaseModel):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
-            KLweight = maxKLweight * min(1, epoch / maxKLepoch)
+        for epoch in range(n_epochs):
+            kl_weight = max_kl_weight * min(1, epoch / max_kl_epoch)
             startTime = time.time()
             self.train()
             runningLoss = 0.0
@@ -311,7 +311,7 @@ class SauryModel(BaseModel):
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
-                loss = criterion(outputs, targets, KLweight)
+                loss = criterion(outputs, targets, kl_weight)
                 loss.backward()
                 optimizer.step()
                 runningLoss += loss.item()
@@ -331,7 +331,7 @@ class SauryModel(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             if valLoss < bestValLoss:
@@ -360,7 +360,7 @@ class TPCNetCustomLoss(nn.Module):
 
 class TPCNetAllPhases(BaseModel):
     def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0.):
-        super().__init__()
+        super().__init__(self, device, verbose)
         self.default_weights_path = root_dir / 'weights/tpcnet.pth'
 
         p = [0, 0] # padding
@@ -564,12 +564,12 @@ class TPCNetAllPhases(BaseModel):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 60, learningRate = 5e-3):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs = 60, learning_rate = 5e-3):
         self.to(self.device)
         criterion = self.loss_fcn
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[nEpochs//2], gamma=0.1, last_epoch=-1)
-        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[n_epochs//2], gamma=0.1, last_epoch=-1)
+        # earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -586,7 +586,7 @@ class TPCNetAllPhases(BaseModel):
         # print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             startTime = time.time()
             self.train()
             runningLoss = 0.0
@@ -625,7 +625,7 @@ class TPCNetAllPhases(BaseModel):
             # if lastLR != scheduler.get_last_lr():
             #     print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, MSE Train Loss: {mse_trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, MSE Train Loss: {mse_trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             # Lmao this saves every epoch instead of every run at the moment. Oops.
@@ -637,8 +637,8 @@ class TPCNetAllPhases(BaseModel):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class BayesHIModel(BaseModel):
-    def __init__(self, cnnBlocks: int = 1, kernelNumber: int = 8, kernelWidth1: int = 31, kernelWidth2: int = 3, kernelMult: float = 2.0, pooling: str = 'off', MHANumber: int = 4, transformerNumber: int = 1, priorMu: float = 0.0, priorSigma: float = 0.01, posEncType: str = 'sinusoidal'):
-        super().__init__()
+    def __init__(self, cnn_blocks: int = 1, kernel_number: int = 8, kernel_width1: int = 31, kernel_width2: int = 3, kernel_mult: float = 2.0, pooling: str = 'off', mha_number: int = 4, transformer_number: int = 1, prior_mu: float = 0.0, prior_sigma: float = 0.01, pos_enc_type: str = 'sinusoidal'):
+        super().__init__(self, device, verbose)
         self.default_weights_path = root_dir / 'weights/bayeshi.pth'
         
         self.pooling = pooling
@@ -649,34 +649,34 @@ class BayesHIModel(BaseModel):
         # self.pool_layers = nn.ModuleList()
         in_channels = 1
         Hout, Wout = 1, 256  # Initial input size
-        for i in range(cnnBlocks):
+        for i in range(cnn_blocks):
             # Check if the width of the kernel is larger than the input size
             #TODO: this doesn't catch the negative dimension tensor error
-            if Wout < kernelWidth1 or self.get_output_size(Hout, Wout, k=[1, kernelWidth1], s=[1, 1], p=[0, 0], d=[1, 1])[1] < kernelWidth2:
+            if Wout < kernel_width1 or self.get_output_size(Hout, Wout, k=[1, kernel_width1], s=[1, 1], p=[0, 0], d=[1, 1])[1] < kernel_width2:
                 print('Dimensions too small for kernel size in kernel block', i, '. Ignoring block and continuing...')
-                cnnBlocks = i
+                cnn_blocks = i
                 break
             
             # if i == 0:
-            #     out_channels = kernelNumber
+            #     out_channels = kernel_number
             # else:
-            #     out_channels = int(in_channels * kernelMult)
+            #     out_channels = int(in_channels * kernel_mult)
             
             
             if i == 0:
-                out_channels = int(convBlocks * kernelNumber)
+                out_channels = int(convBlocks * kernel_number)
             else:
-                out_channels = int(in_channels - kernelNumber)
-            out_channels2 = int(out_channels - kernelNumber)
+                out_channels = int(in_channels - kernel_number)
+            out_channels2 = int(out_channels - kernel_number)
             
-            print(f'Convolutional block {i + 1}: in_channels={in_channels}, out_channels={out_channels2}, kernelWidth1={kernelWidth1}, kernelWidth2={kernelWidth2}, pooling={pooling}')
+            print(f'Convolutional block {i + 1}: in_channels={in_channels}, out_channels={out_channels2}, kernel_width1={kernel_width1}, kernel_width2={kernel_width2}, pooling={pooling}')
             self.conv_layers.append(
             bnn.BayesConv2d(
-                prior_mu=priorMu,
-                prior_sigma=priorSigma,
+                prior_mu=prior_mu,
+                prior_sigma=prior_sigma,
                 in_channels=in_channels,
                 out_channels=out_channels,
-                kernel_size=(1, kernelWidth1),
+                kernel_size=(1, kernel_width1),
                 padding=(0, 0)
             )
             )
@@ -686,11 +686,11 @@ class BayesHIModel(BaseModel):
                 self.conv_layers.append(nn.AvgPool2d(kernel_size=(1, 2), stride=(1, 2)))
             self.conv_layers.append(
             bnn.BayesConv2d(
-                prior_mu=priorMu,
-                prior_sigma=priorSigma,
+                prior_mu=prior_mu,
+                prior_sigma=prior_sigma,
                 in_channels=out_channels,
                 out_channels=out_channels2,
-                kernel_size=(1, kernelWidth2),
+                kernel_size=(1, kernel_width2),
                 padding=(0, 0)
             )
             )
@@ -700,27 +700,27 @@ class BayesHIModel(BaseModel):
                 self.conv_layers.append(nn.AvgPool2d(kernel_size=(1, 2), stride=(1, 2)))
             
             in_channels = out_channels2
-            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernelWidth1], s=[1, 1], p=[0, 0], d=[1, 1])
+            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernel_width1], s=[1, 1], p=[0, 0], d=[1, 1])
             if self.pooling != 'off':
                 Wout = Wout // 2
-            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernelWidth2], s=[1, 1], p=[0, 0], d=[1, 1])
+            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernel_width2], s=[1, 1], p=[0, 0], d=[1, 1])
             if self.pooling != 'off':
                 Wout = Wout // 2
             if out_channels == 1:
                 break
             
-        if posEncType == 'sinusoidal':
+        if pos_enc_type == 'sinusoidal':
             self.positional_encoding = PositionalEncoding(d_model = out_channels)
-        elif posEncType == 'stochastic':
+        elif pos_enc_type == 'stochastic':
             self.positional_encoding = StochasticPositionalEncoding(d_model = out_channels)
         else:
             self.positional_encoding = None
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model = out_channels, nhead=MHANumber, batch_first=True),
-            num_layers=transformerNumber
+            nn.TransformerEncoderLayer(d_model = out_channels, nhead=mha_number, batch_first=True),
+            num_layers=transformer_number
         )
         self.flatten = nn.Flatten()
-        self.decoder = bnn.BayesLinear(prior_mu=priorMu, prior_sigma=priorSigma,
+        self.decoder = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma,
                                         in_features=out_channels * Wout, out_features=4)
         
         # Initialise weights using Kaiming normal initialization
@@ -771,18 +771,18 @@ class BayesHIModel(BaseModel):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
 
-    def lossFunction(self, outputs, targets, KLweight):
+    def lossFunction(self, outputs, targets, kl_weight):
         MSE = nn.MSELoss()
         BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
-        return MSE(outputs, targets) + KLweight * BKLoss(self)
+        return MSE(outputs, targets) + kl_weight * BKLoss(self)
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 100, learningRate = 0.001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0.0001, maxKLweight = 0.01, maxKLepoch = 100, early_stop = False):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs = 100, learning_rate = 0.001, scheduler_step = 15, stopper_patience = 20, stopper_tol = 0.0001, max_kl_weight = 0.01, max_kl_epoch = 100, early_stop = False):
         # Track a single set of weights through the training process
         criterion = self.lossFunction
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
         if early_stop:
-            earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+            earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -801,9 +801,9 @@ class BayesHIModel(BaseModel):
 
         for p in self.parameters():
             p.requires_grad = True  # Ensure all parameters are trainable
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
-            KLweight = maxKLweight * min(1, epoch / maxKLepoch)
+            kl_weight = max_kl_weight * min(1, epoch / max_kl_epoch)
             startTime = time.time()
             runningLoss = 0.0
             loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
@@ -812,7 +812,7 @@ class BayesHIModel(BaseModel):
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
-                loss = criterion(outputs, targets, KLweight)
+                loss = criterion(outputs, targets, kl_weight)
                 loss.backward()
                 optimizer.step()
                 runningLoss += loss.item()
@@ -832,7 +832,7 @@ class BayesHIModel(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             # Lmao this saves every epoch instead of every run at the moment. Oops.
@@ -845,7 +845,7 @@ class BayesHIModel(BaseModel):
 
 class RNNModel(BaseModel):
     def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4, output_dim=4):
-        super().__init__()
+        super().__init__(self, device, verbose)
         self.default_weights_path = None
 
         # Embed scalar inputs to d_model dimension
@@ -893,12 +893,12 @@ class RNNModel(BaseModel):
         """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
         return x.unsqueeze(1).to(self.device)
     
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -911,7 +911,7 @@ class RNNModel(BaseModel):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -940,7 +940,7 @@ class RNNModel(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -952,7 +952,7 @@ class RNNModel(BaseModel):
 
 class LSTMSequencePredictor(BaseModel):
     def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=4, aggregation='mean'):
-        super().__init__()
+        super().__init__(self, device, verbose)
         self.default_weights_path = None
 
         self.aggregation = aggregation
@@ -993,12 +993,12 @@ class LSTMSequencePredictor(BaseModel):
         """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
         return x.unsqueeze(1).to(self.device)
     
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1011,7 +1011,7 @@ class LSTMSequencePredictor(BaseModel):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -1040,7 +1040,7 @@ class LSTMSequencePredictor(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1190,18 +1190,16 @@ class SAMLoss(nn.Module):
         else:  # 'none'
             return angles
 
-class LSTMSequenceToSequence(nn.Module):
-    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=1, device='cpu'):
-        super().__init__()
-        self.default_weights_path = None
-
+class LSTMSequenceToSequence(BaseModel):
+    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=1):
+        super().__init__(self, device, verbose)
+        self.default_weights_path = root_dir / 'weights/lstm_seq2seq.pth'
+        
         self.embedding = nn.Linear(input_dim, hidden_dim)
         self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim,
                             num_layers=num_layers, batch_first=True)
         self.head = nn.Linear(hidden_dim, output_dim)
 
-        self.to(self.device)
-        
         # self.refiner = SpectralRefiner().to(self.device)
 
     def forward(self, x):
@@ -1231,13 +1229,13 @@ class LSTMSequenceToSequence(nn.Module):
         """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
         return x.unsqueeze(1).to(self.device)
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         criterion = nn.MSELoss()
         # criterion = SAMLoss(reduction='mean')
         # mse = nn.MSELoss()
-        optimizer = optim.AdamW(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1250,7 +1248,7 @@ class LSTMSequenceToSequence(nn.Module):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -1279,7 +1277,7 @@ class LSTMSequenceToSequence(nn.Module):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1289,51 +1287,51 @@ class LSTMSequenceToSequence(nn.Module):
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
     
-    def evaluate(self, loader, criterion=nn.MSELoss()):
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
+    # def evaluate(self, loader, criterion=nn.MSELoss()):
+    #     self.eval()
+    #     totalLoss = 0.0
+    #     with torch.no_grad():
+    #         for inputs, targets in loader:
+    #             inputs = inputs.unsqueeze(1).to(self.device)
+    #             targets = targets.to(self.device)
+    #             outputs = self(inputs)
+    #             loss = criterion(outputs, targets)
+    #             totalLoss += loss.item()
+    #     avgLoss = totalLoss / len(loader)
+    #     return avgLoss
     
-    def predict(self, test_loader):
-        self.eval()
-        predictions = []
-        with torch.no_grad():
-            for inputs, *_ in test_loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                outputs = self(inputs)
-                predictions.append(outputs)
-        return torch.cat(predictions, dim=0)
+    # def predict(self, test_loader):
+    #     self.eval()
+    #     predictions = []
+    #     with torch.no_grad():
+    #         for inputs, *_ in test_loader:
+    #             inputs = inputs.unsqueeze(1).to(self.device)
+    #             outputs = self(inputs)
+    #             predictions.append(outputs)
+    #     return torch.cat(predictions, dim=0)
 
-    def load_weights(self, path):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
+    # def load_weights(self, path):
+    #     print(f'Loading model from {path}')
+    #     if self.device == 'cpu':
+    #         self.load_state_dict(torch.load(path, map_location=self.device))
+    #     else:
+    #         self.load_state_dict(torch.load(path))
+    #         self.to(self.device)
+    #     print('Model loaded successfully')
 
 @variational_estimator
 class BLSTMSequenceToSequence(nn.Module):
-    def __init__(self, input_dim=1, hidden_dim=128, priorSigma=0.1, num_layers=2, output_dim=1, device='cpu'):
+    def __init__(self, input_dim=1, hidden_dim=128, prior_sigma=0.1, num_layers=2, output_dim=1, device='cpu'):
         super().__init__()
         self.device = torch.device(device)
 
         # self.embedding = nn.Linear(input_dim, hidden_dim)
-        self.embedding = bnn.BayesLinear(prior_mu=0., prior_sigma=priorSigma, in_features=input_dim, out_features=hidden_dim)
+        self.embedding = bnn.BayesLinear(prior_mu=0., prior_sigma=prior_sigma, in_features=input_dim, out_features=hidden_dim)
         # self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim,
                             # num_layers=num_layers, batch_first=True)
         self.lstm = BayesianLSTM(in_features = hidden_dim, out_features = hidden_dim)
         # self.head = nn.Linear(hidden_dim, output_dim)
-        self.head = bnn.BayesLinear(prior_mu=0., prior_sigma=priorSigma, in_features=hidden_dim, out_features=output_dim)
+        self.head = bnn.BayesLinear(prior_mu=0., prior_sigma=prior_sigma, in_features=hidden_dim, out_features=output_dim)
 
         self.to(self.device)
         
@@ -1362,14 +1360,14 @@ class BLSTMSequenceToSequence(nn.Module):
 
         return x  # (B, 256) or (B, 256, output_dim)
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
         # criterion = SAMLoss(reduction='mean')
         # mse = nn.MSELoss()
-        optimizer = optim.AdamW(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = earlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1382,7 +1380,7 @@ class BLSTMSequenceToSequence(nn.Module):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -1412,7 +1410,7 @@ class BLSTMSequenceToSequence(nn.Module):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1435,11 +1433,11 @@ class BLSTMSequenceToSequence(nn.Module):
         avgLoss = totalLoss / len(loader)
         return avgLoss
     
-    def predict(self, test_loader, numPredictions):
+    def predict(self, test_loader, n_predictions):
         self.eval()
         allPredictions = []
-        # for _ in tqdm(range(numPredictions), desc='Predicting', file=sys.stdout):
-        for _ in range(numPredictions):
+        # for _ in tqdm(range(n_predictions), desc='Predicting', file=sys.stdout):
+        for _ in range(n_predictions):
             predictions = []
             with torch.no_grad():
                 for inputs, *_ in test_loader:
@@ -1502,12 +1500,12 @@ class TransformerWithAttentionAggregation(nn.Module):
         """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
         return x.unsqueeze(1).to(self.device)
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1520,7 +1518,7 @@ class TransformerWithAttentionAggregation(nn.Module):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -1549,7 +1547,7 @@ class TransformerWithAttentionAggregation(nn.Module):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1561,7 +1559,7 @@ class TransformerWithAttentionAggregation(nn.Module):
 
 class SimpleCNN(BaseModel):
     def __init__(self, cnn_blocks):
-        super().__init__()
+        super().__init__(self, device, verbose)
         self.default_weights_path = None
 
         self.cnn_blocks = cnn_blocks
@@ -1653,11 +1651,11 @@ class SimpleCNN(BaseModel):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
     
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1670,7 +1668,7 @@ class SimpleCNN(BaseModel):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -1695,7 +1693,7 @@ class SimpleCNN(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             if valLoss < bestValLoss:
@@ -1707,7 +1705,7 @@ class SimpleCNN(BaseModel):
 
 class SimpleBNN(BaseModel):
     def __init__(self, cnn_blocks, prior_mu, prior_sigma, kl_weight = 0.01):
-        super().__init__()
+        super().__init__(self, device, verbose)
         self.default_weights_path = None
         
         self.cnn_blocks = cnn_blocks
@@ -1807,15 +1805,15 @@ class SimpleBNN(BaseModel):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
     
-    def lossFunction(self, outputs, targets, KLweight):
+    def lossFunction(self, outputs, targets, kl_weight):
         MSE = nn.MSELoss()
         BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
-        return MSE(outputs, targets) + KLweight * BKLoss(self)
+        return MSE(outputs, targets) + kl_weight * BKLoss(self)
     
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         criterion = self.lossFunction
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1828,7 +1826,7 @@ class SimpleBNN(BaseModel):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -1853,7 +1851,7 @@ class SimpleBNN(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             if valLoss < bestValLoss:
