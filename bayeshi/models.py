@@ -1840,7 +1840,6 @@ class SimpleBNN(BaseModel):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 
-
 class BayesLSTM(nn.Module):
     def __init__(self, prior_mu, prior_sigma, input_size, hidden_size, num_layers=1, bias=True, batch_first=False):
         super().__init__()
@@ -1959,8 +1958,11 @@ class BayesLSTM(nn.Module):
         return output, (h_n, c_n)
 
 class MyBayesLSTM(BaseModel):
-    def __init__(self, input_dim=1, hidden_dim=128, prior_mu=0.0, prior_sigma=0.1, num_layers=2, output_dim=1, kl_weight=0.01, **kwargs):
+    def __init__(self, input_dim=1, hidden_dim=128, prior_mu=0.0, prior_sigma=0.1, num_layers=2, output_dim=1, kl_weight=0.01, clamp=None, **kwargs):
         super().__init__(**kwargs)
+        self.default_weights_path = root_path / 'weights' / 'my_blstm.pth'
+        
+        self.clamp = clamp
         self.kl_weight = kl_weight
 
         self.embedding = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma, in_features=input_dim, out_features=hidden_dim)
@@ -1996,6 +1998,15 @@ class MyBayesLSTM(BaseModel):
             
         # Apply the spectral refiner network
         # x = self.refiner(x)
+        
+        # Make sure the elements of the sequence are between 0 and 1
+        if self.clamp:
+            x = torch.clamp(x, 0, 1)
+        elif self.clamp is not None:
+            try:
+                x = torch.clamp(x, self.clamp[0], self.clamp[1])
+            except TypeError:
+                raise ValueError("clamp must be a tuple of two values (min, max) or None")
 
         return x
     
