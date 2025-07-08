@@ -66,7 +66,7 @@ from torch.utils.data import DataLoader, TensorDataset
 def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='fractions',
               dataset='all', tigress_sim='all', seta_sim='both', split=None,
               batch_size=32, num_workers=4, noise=0.5, test_size=0.2, val_size=0.2,
-              random_state=42, show_example=False, verbose=False):
+              e_minus_tau=False, random_state=42, show_example=False, verbose=False):
     # If you need to save space in memory and are loading a subset of the data, I recommend not using all the TIGRESS cubes.
     # Instead, select only a few of them as loading all 11 cubes just to subsample at the end is not efficient.
 
@@ -75,6 +75,9 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
         raise ValueError("x_values must be either 'emission' or 'absorption'")
     if y_values not in ['fractions', 'absorption', 'emission']:
         raise ValueError("y_values must be either 'fractions', 'absorption', or 'emission'")
+    
+    if e_minus_tau and (x_values != 'absorption' or y_values != 'absorption'):
+        raise ValueError("e_minus_tau should only be used with x_values='absorption' and y_values='absorption'")
 
     # Create empty arrays to be overwritten as needed
     tigress_x, tigress_y = np.array([]), np.array([])
@@ -218,6 +221,15 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
         x_data[idx:idx+n] = x_arr
         y_data[idx:idx+n] = y_arr
         idx += n
+        
+    if e_minus_tau and x_values == 'absorption':
+        if verbose:
+            print('Applying e^{-tau} transformation to the data')
+        x_data = np.exp(-x_data)
+    elif e_minus_tau and y_values == 'absorption':
+        if verbose:
+            print('Applying e^{-tau} transformation to the target data')
+        y_data = np.exp(-y_data)
     
     if noise > 0:
         if verbose:
