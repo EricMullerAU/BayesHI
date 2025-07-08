@@ -204,17 +204,25 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
     # Concatenate the data
     x_arrays = [v[0] for v in sim_data.values() if v is not None]
     y_arrays = [v[1] for v in sim_data.values() if v is not None]
-    x_data = np.concatenate(x_arrays, axis=0) if x_arrays else np.array([])
-    y_data = np.concatenate(y_arrays, axis=0) if y_arrays else np.array([])
+    # Pre-allocate arrays for speed if possible
+    total_samples = sum(arr.shape[0] for arr in x_arrays)
+    x_shape = x_arrays[0].shape[1:] if x_arrays else ()
+    y_shape = y_arrays[0].shape[1:] if y_arrays else ()
 
-    # Concatenate the data
-    x_arrays = [v[0] for v in sim_data.values() if v is not None]
-    y_arrays = [v[1] for v in sim_data.values() if v is not None]
-    x_data = np.concatenate(x_arrays, axis=0) if x_arrays else np.array([])
-    y_data = np.concatenate(y_arrays, axis=0) if y_arrays else np.array([])
+    x_data = np.empty((total_samples, *x_shape), dtype=x_arrays[0].dtype) if x_arrays else np.array([])
+    y_data = np.empty((total_samples, *y_shape), dtype=y_arrays[0].dtype) if y_arrays else np.array([])
+
+    idx = 0
+    for x_arr, y_arr in zip(x_arrays, y_arrays):
+        n = x_arr.shape[0]
+        x_data[idx:idx+n] = x_arr
+        y_data[idx:idx+n] = y_arr
+        idx += n
     
-      
-    x_data += np.random.randn(*x_data.shape) * noise
+    if noise > 0:
+        if verbose:
+            print(f'Adding noise with amplitude of {noise}K to the data')
+        x_data += np.random.randn(*x_data.shape) * noise
     
     print('Total number of spectra:', x_data.shape[0])
 
@@ -361,6 +369,9 @@ def load_saury_data(data_path, x_values='emission', y_values='fractions', verbos
     else:
         raise ValueError("x_values must be either 'emission' or 'absorption'")
     
+    if verbose:
+        print(f'Loading Saury data with x_values={x_values} and y_values={y_values}')
+    
     # Change from (v, z, x) to (x*z, v)
     x_data = np.moveaxis(x_data, 0, -1)
     x_data = x_data.reshape(-1, x_data.shape[-1])
@@ -409,6 +420,9 @@ def load_seta_data(data_path, sim_type='both', x_values='emission', y_values='fr
     y_data = np.array([])
     
     for sim in sims:
+        if verbose:
+            print(f'Loading Seta simulation {sim} with x_values={x_values} and y_values={y_values}')
+        
         if x_values == 'emission':
             spectra = fits.getdata(data_path + f'seta_{sim}_Tb.fits')
         elif x_values == 'absorption':
