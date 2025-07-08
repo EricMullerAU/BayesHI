@@ -173,7 +173,7 @@ class BaseModel(nn.Module):
                         outputs = outputs[0]
                     predictions.append(outputs)
             all_predictions.append(torch.cat(predictions, dim=0))
-        return torch.cat(all_predictions, dim=0)
+        return torch.stack(all_predictions, dim=0)
 
     def evaluate(self, loader, criterion=nn.MSELoss()):
         self.eval()
@@ -1397,7 +1397,6 @@ class BLSTMSequenceToSequence(BaseModel):
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
-                # loss = criterion(outputs, targets)# + 1.0 * mse(outputs, targets)  # Add MSE for learning the magnitudes
                 loss = self.sample_elbo(inputs, targets, criterion=criterion, sample_nbr=3)
                 loss.backward()
                 optimizer.step()
@@ -1838,4 +1837,221 @@ class SimpleBNN(BaseModel):
                 if checkpoint_path is not None:
                     torch.save(self.state_dict(), checkpoint_path)
 
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+
+
+
+class BayesLSTM(nn.Module):
+    def __init__(self, prior_mu, prior_sigma, input_size, hidden_size, num_layers=1, bias=True, batch_first=False):
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.bias = bias
+        self.batch_first = batch_first
+
+        self.prior_mu = prior_mu
+        self.prior_sigma = prior_sigma
+        self.prior_log_sigma = math.log(prior_sigma)
+
+        # Register weight and bias parameters (mean and log_sigma) for all layers
+        self.weight_ih_mu = nn.ParameterList()
+        self.weight_ih_log_sigma = nn.ParameterList()
+        self.weight_hh_mu = nn.ParameterList()
+        self.weight_hh_log_sigma = nn.ParameterList()
+        if bias:
+            self.bias_ih_mu = nn.ParameterList()
+            self.bias_ih_log_sigma = nn.ParameterList()
+            self.bias_hh_mu = nn.ParameterList()
+            self.bias_hh_log_sigma = nn.ParameterList()
+        else:
+            self.register_parameter('bias_ih_mu', None)
+            self.register_parameter('bias_ih_log_sigma', None)
+            self.register_parameter('bias_hh_mu', None)
+            self.register_parameter('bias_hh_log_sigma', None)
+
+        for layer in range(num_layers):
+            in_dim = input_size if layer == 0 else hidden_size
+            # Input-hidden weights
+            self.weight_ih_mu.append(nn.Parameter(torch.Tensor(4 * hidden_size, in_dim)))
+            self.weight_ih_log_sigma.append(nn.Parameter(torch.Tensor(4 * hidden_size, in_dim)))
+            # Hidden-hidden weights
+            self.weight_hh_mu.append(nn.Parameter(torch.Tensor(4 * hidden_size, hidden_size)))
+            self.weight_hh_log_sigma.append(nn.Parameter(torch.Tensor(4 * hidden_size, hidden_size)))
+            if bias:
+                self.bias_ih_mu.append(nn.Parameter(torch.Tensor(4 * hidden_size)))
+                self.bias_ih_log_sigma.append(nn.Parameter(torch.Tensor(4 * hidden_size)))
+                self.bias_hh_mu.append(nn.Parameter(torch.Tensor(4 * hidden_size)))
+                self.bias_hh_log_sigma.append(nn.Parameter(torch.Tensor(4 * hidden_size)))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        stdv = 1.0 / math.sqrt(self.hidden_size)
+        for l in range(self.num_layers):
+            self.weight_ih_mu[l].data.uniform_(-stdv, stdv)
+            self.weight_ih_log_sigma[l].data.fill_(self.prior_log_sigma)
+            self.weight_hh_mu[l].data.uniform_(-stdv, stdv)
+            self.weight_hh_log_sigma[l].data.fill_(self.prior_log_sigma)
+            if self.bias:
+                self.bias_ih_mu[l].data.uniform_(-stdv, stdv)
+                self.bias_ih_log_sigma[l].data.fill_(self.prior_log_sigma)
+                self.bias_hh_mu[l].data.uniform_(-stdv, stdv)
+                self.bias_hh_log_sigma[l].data.fill_(self.prior_log_sigma)
+
+    def sample_params(self, mu, log_sigma):
+        # Reparameterization trick: w = mu + sigma * epsilon, epsilon ~ N(0,1)
+        epsilon = torch.randn_like(log_sigma)
+        return mu + torch.exp(log_sigma) * epsilon
+
+    def forward(self, input, hx=None):
+        if self.batch_first:
+            input = input.transpose(0, 1)  # (seq_len, batch, input_size)
+        seq_len, batch_size, _ = input.size()
+
+        if hx is None:
+            h_0 = input.new_zeros(self.num_layers, batch_size, self.hidden_size, requires_grad=False)
+            c_0 = input.new_zeros(self.num_layers, batch_size, self.hidden_size, requires_grad=False)
+        else:
+            h_0, c_0 = hx
+
+        h_n = []
+        c_n = []
+
+        layer_input = input
+        for layer in range(self.num_layers):
+            h_t = h_0[layer]
+            c_t = c_0[layer]
+            outputs = []
+
+            # Sample weights and biases for this layer
+            w_ih = self.sample_params(self.weight_ih_mu[layer], self.weight_ih_log_sigma[layer])
+            w_hh = self.sample_params(self.weight_hh_mu[layer], self.weight_hh_log_sigma[layer])
+            if self.bias:
+                b_ih = self.sample_params(self.bias_ih_mu[layer], self.bias_ih_log_sigma[layer])
+                b_hh = self.sample_params(self.bias_hh_mu[layer], self.bias_hh_log_sigma[layer])
+            else:
+                b_ih = b_hh = 0
+
+            for t in range(seq_len):
+                x_t = layer_input[t]
+                gates = (F.linear(x_t, w_ih, b_ih) +
+                         F.linear(h_t, w_hh, b_hh))
+                i, f, g, o = gates.chunk(4, 1)
+                i = torch.sigmoid(i)
+                f = torch.sigmoid(f)
+                g = torch.tanh(g)
+                o = torch.sigmoid(o)
+                c_t = f * c_t + i * g
+                h_t = o * torch.tanh(c_t)
+                outputs.append(h_t)
+            outputs = torch.stack(outputs, 0)
+            layer_input = outputs
+            h_n.append(h_t)
+            c_n.append(c_t)
+
+        output = layer_input
+        h_n = torch.stack(h_n, 0)
+        c_n = torch.stack(c_n, 0)
+
+        if self.batch_first:
+            output = output.transpose(0, 1)  # (batch, seq_len, hidden_size)
+        return output, (h_n, c_n)
+
+class MyBayesLSTM(BaseModel):
+    def __init__(self, input_dim=1, hidden_dim=128, prior_mu=0.0, prior_sigma=0.1, num_layers=2, output_dim=1, kl_weight=0.01, **kwargs):
+        super().__init__(**kwargs)
+        self.kl_weight = kl_weight
+
+        self.embedding = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma, in_features=input_dim, out_features=hidden_dim)
+        self.lstm = BayesLSTM(prior_mu=prior_mu, prior_sigma=prior_sigma, input_size=hidden_dim, hidden_size=hidden_dim, num_layers=num_layers)
+        self.head = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma, in_features=hidden_dim, out_features=output_dim)
+
+        # self.refiner = SpectralRefiner().to(self.device)
+
+        self.to(self.device)
+        
+    def lossFunction(self, outputs, targets):
+        MSE = nn.MSELoss()
+        BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
+        return MSE(outputs, targets) + self.kl_weight * BKLoss(self)
+
+    def forward(self, x):
+        """
+        x: Tensor of shape (B, 1, 256)
+        Returns:
+            output: (B, 256) or (B, 256, output_dim) depending on output_dim
+        """
+        x = x.to(self.device)
+        B, H, L = x.shape
+        assert H == 1, f"Expected input shape (B, 1, L), got {x.shape}"
+
+        x = x.view(B, L).unsqueeze(-1)       # (B, L, 1)
+        x = self.embedding(x)                # (B, L, hidden_dim)
+        x, _ = self.lstm(x)                  # (B, L, hidden_dim)
+        x = self.head(x)                     # (B, L, output_dim)
+
+        if x.shape[-1] == 1:
+            x = x.squeeze(-1)                # (B, L)
+            
+        # Apply the spectral refiner network
+        # x = self.refiner(x)
+
+        return x
+    
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
+        return x.unsqueeze(1).to(self.device)
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
+        self.to(self.device)
+        criterion = self.lossFunction
+        optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = earlyStopper(patience=stopper_patience, tol=stopper_tol)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+        
+        for epoch in range(n_epochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = inputs.unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader)
+            valErrors.append(valLoss)
+            
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+                
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+            
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+                    
         return trainErrors, valErrors, trainedEpochs, epochTimes
