@@ -369,6 +369,7 @@ class TPCNetAllPhases(BaseModel):
         d = [1, 1] # dilation
         s = [1, 1] # stride
                 
+        self.num_output = num_output
         self.num_features = 54
         self.input_row = input_row
         self.in_channels = in_channels
@@ -381,7 +382,11 @@ class TPCNetAllPhases(BaseModel):
         self.emb_pos_encoder = PositionalEncoding(dropout = self.drop_out_rate, d_model=9, max_len=self.input_column)
         self.spec_pos_encoder = SinusoidalPositionalEncoding(dropout=self.drop_out_rate, max_len=self.input_column)
         
-        self.loss_fcn = TPCNetCustomLoss(weights=[1., 1., 1., 1.])
+        if num_output == 4:
+            self.loss_fcn = TPCNetCustomLoss(weights=[1., 1., 1., 1.])
+        else:
+            print('Warning: num_output is not 4, using MSE loss instead of TPCNetCustomLoss.')
+            self.loss_fcn = nn.MSELoss()
 
         # num_layer*8 + 8
         
@@ -558,6 +563,7 @@ class TPCNetAllPhases(BaseModel):
         x = self.flatten(x)
     
         x = self.decoder(x)
+        
         return x
 
     def preprocess_inputs(self, x):
@@ -1960,7 +1966,7 @@ class BayesLSTM(nn.Module):
 class MyBayesLSTM(BaseModel):
     def __init__(self, input_dim=1, hidden_dim=128, prior_mu=0.0, prior_sigma=0.1, num_layers=2, output_dim=1, kl_weight=0.01, clamp=None, **kwargs):
         super().__init__(**kwargs)
-        self.default_weights_path = root_path / 'weights' / 'my_blstm.pth'
+        self.default_weights_path = root_dir / 'weights' / 'my_blstm.pth'
         
         self.clamp = clamp
         self.kl_weight = kl_weight
@@ -2000,13 +2006,14 @@ class MyBayesLSTM(BaseModel):
         # x = self.refiner(x)
         
         # Make sure the elements of the sequence are between 0 and 1
-        if self.clamp:
-            x = torch.clamp(x, 0, 1)
-        elif self.clamp is not None:
-            try:
+        # Only clamp if requested, and only for inference/post-processing, not during training
+        if not self.training:
+            if self.clamp is True:
+                x = torch.clamp(x, 0, 1)
+            elif isinstance(self.clamp, (tuple, list)) and len(self.clamp) == 2:
                 x = torch.clamp(x, self.clamp[0], self.clamp[1])
-            except TypeError:
-                raise ValueError("clamp must be a tuple of two values (min, max) or None")
+            elif self.clamp is not None:
+                raise ValueError("clamp must be True, None, or a tuple/list of two values (min, max)")
 
         return x
     

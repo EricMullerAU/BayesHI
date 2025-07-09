@@ -12,9 +12,7 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 import warnings
-
-# Import your load_data function
-from bayeshi.data_loaders import load_data  # Update path as needed
+from bayeshi.data_loaders import load_data
 
 class TestDataLoader(unittest.TestCase):
     def setUp(self):

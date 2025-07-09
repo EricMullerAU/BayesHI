@@ -76,8 +76,8 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
     if y_values not in ['fractions', 'absorption', 'emission']:
         raise ValueError("y_values must be either 'fractions', 'absorption', or 'emission'")
     
-    if e_minus_tau and (x_values != 'absorption' or y_values != 'absorption'):
-        raise ValueError("e_minus_tau should only be used with x_values='absorption' and y_values='absorption'")
+    if e_minus_tau and x_values != 'absorption' and y_values != 'absorption':
+        raise ValueError("e_minus_tau should only be used with x_values='absorption' and/or y_values='absorption'")
 
     # Create empty arrays to be overwritten as needed
     tigress_x, tigress_y = np.array([]), np.array([])
@@ -275,20 +275,70 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
     
     if show_example:
         import matplotlib.pyplot as plt
-        random_indices = np.random.choice(spectra.shape[0], size=5, replace=False)
-        plt.figure(figsize=(10, 6))
-        for i in random_indices:
-            if x_values == 'emission':
-                plt.plot(spectra[i].T)
-            elif x_values == 'absorption':
-                plt.plot(np.exp(-spectra[i]).T)
-        plt.xlabel('Channel')
-        if x_values == 'emission':
-            plt.ylabel(r'$T_B$ [K]')
-        elif x_values == 'absorption':
-            plt.ylabel(r'$e^{-\tau}$')
-        plt.title('Example Spectra')
-        plt.show()
+        # Plot 5 random examples
+        random_indices = np.random.choice(x_data.shape[0], size=5, replace=False)
+        for idx in random_indices:
+            # If both x and y are spectra (1D arrays of same length)
+            if (
+            (x_values in ['emission', 'absorption'])
+            and (y_values in ['emission', 'absorption'])
+            and (x_data.shape[1] == y_data.shape[1])
+            ):
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+                vch = np.arange(x_data.shape[1])
+
+                # Plot x
+                if x_values == 'emission':
+                    ax1.plot(vch, x_data[idx], 'k-', label=r'$T_{b}$ (kh)')
+                    ax1.set_ylabel('$T_{b} [K]$', fontsize=20)
+                elif x_values == 'absorption':
+                    if e_minus_tau:
+                        ax1.plot(vch, x_data[idx], 'k-', label=r'$e^{-\tau}$')
+                        ax1.set_ylabel(r'$e^{-\tau}$', fontsize=20)
+                    else:
+                        ax1.plot(vch, x_data[idx], 'k-', label=r'$\tau$')
+                        ax1.set_ylabel(r'$\tau$', fontsize=20)
+                ax1.legend(loc='upper left', fontsize=12)
+                ax1.grid(True, linestyle='--', linewidth=0.5, color='lightgray', zorder=-10)
+                ax1.tick_params(axis='x', labelsize=14)
+                ax1.tick_params(axis='y', labelsize=14)
+
+                # Plot y
+                if y_values == 'emission':
+                    ax2.plot(vch, y_data[idx], 'k-', label='True')
+                    ax2.set_ylabel(r'$T_{b} [K]$', fontsize=20)
+                elif y_values == 'absorption':
+                    if e_minus_tau:
+                        ax2.plot(vch, y_data[idx], 'k-', label=r'$e^{-\tau}$')
+                        ax2.set_ylabel(r'$e^{-\tau}$', fontsize=20)
+                    else:
+                        ax2.plot(vch, y_data[idx], 'k-', label=r'$\tau$')
+                        ax2.set_ylabel(r'$\tau$', fontsize=20)
+                ax2.legend(loc='lower left', fontsize=12)
+                ax2.grid(True, linestyle='--', linewidth=0.5, color='lightgray', zorder=-10)
+                ax2.tick_params(axis='x', labelsize=14)
+                ax2.tick_params(axis='y', labelsize=14)
+                ax2.set_xlabel('Channel', fontsize=20)
+
+                plt.subplots_adjust(wspace=0.15, hspace=0.05)
+                plt.suptitle('Example Spectra (x and y)', fontsize=22)
+                plt.show()
+            else:
+                # Default: just plot x_data
+                plt.figure(figsize=(10, 6))
+                if x_values == 'emission':
+                    plt.plot(x_data[idx].T)
+                    plt.ylabel(r'$T_B$ [K]')
+                elif x_values == 'absorption':
+                    if e_minus_tau:
+                        plt.plot(np.exp(-x_data[idx]).T)
+                        plt.ylabel(r'$e^{-\tau}$')
+                    else:
+                        plt.plot(x_data[idx].T)
+                        plt.ylabel(r'$\tau$')
+                plt.xlabel('Channel')
+                plt.title('Example Spectra')
+                plt.show()
     
     return train_loader, val_loader, test_loader
 
@@ -324,8 +374,11 @@ def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values
             print(f'Loading TIGRESS simulation cube {sim} ({i+1}/{len(sim_number)}) with x_values={x_values} and y_values={y_values}')
         if x_values == 'emission':
             spectra = fits.getdata(data_path + f'{sim}_Tb_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
+            # Fix FITS big-endian order issue
+            spectra = spectra.astype(np.float32)
         elif x_values == 'absorption':
             spectra = fits.getdata(data_path + f'{sim}_Tau_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
+            spectra = spectra.astype(np.float32)
         else:
             raise ValueError("x_values must be either 'emission' or 'absorption'")
                 
@@ -344,6 +397,11 @@ def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values
             fwnm = fits.getdata(data_path + f'{sim}_fwnm_FINAL.fits')[3584//2-128:3584//2+128, :]
             rhi = fits.getdata(data_path + f'{sim}_rhi_FINAL.fits')[3584//2-128:3584//2+128, :]
             
+            fcnm = fcnm.astype(np.float32)
+            funm = funm.astype(np.float32)
+            fwnm = fwnm.astype(np.float32)
+            rhi = rhi.astype(np.float32)
+            
             # Stack from (z, x) to (z, x, 4)
             fractions = np.stack((fcnm, funm, fwnm, rhi), axis=2)
             # Change from (z, x, 4) to (x*z, 4)
@@ -352,11 +410,13 @@ def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values
             
         elif y_values == 'absorption':
             absorption = fits.getdata(data_path + f'{sim}_Tau_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
+            absorption = absorption.astype(np.float32)
             # Change from (v, z, x) to (x*z, v)
             absorption = np.moveaxis(absorption, 0, -1)
             y_data_temp = absorption.reshape(-1, absorption.shape[-1])
         elif y_values == 'emission':
             emission = fits.getdata(data_path + f'{sim}_Tb_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
+            emission = emission.astype(np.float32)
             # Change from (v, z, x) to (x*z, v)
             emission = np.moveaxis(emission, 0, -1)
             y_data_temp = emission.reshape(-1, emission.shape[-1])
@@ -376,8 +436,10 @@ def load_saury_data(data_path, x_values='emission', y_values='fractions', verbos
 
     if x_values == 'emission':
         x_data = fits.getdata(data_path + 'saury_Tb.fits')
+        x_data = x_data.astype(np.float32)
     elif x_values == 'absorption':
         x_data = fits.getdata(data_path + 'saury_Tau.fits')
+        x_data = x_data.astype(np.float32)
     else:
         raise ValueError("x_values must be either 'emission' or 'absorption'")
     
@@ -394,6 +456,11 @@ def load_saury_data(data_path, x_values='emission', y_values='fractions', verbos
         fwnm = fits.getdata(data_path + 'saury_fwnm.fits')
         rhi = fits.getdata(data_path + 'saury_rhi.fits')
         
+        fcnm = fcnm.astype(np.float32)
+        funm = funm.astype(np.float32)
+        fwnm = fwnm.astype(np.float32)
+        rhi = rhi.astype(np.float32)
+        
         # Stack from (z, x) to (z, x, 4)
         fractions = np.stack((fcnm, funm, fwnm, rhi), axis=2)
         # Change from (z, x, 4) to (x*z, 4)
@@ -401,11 +468,13 @@ def load_saury_data(data_path, x_values='emission', y_values='fractions', verbos
         
     elif y_values == 'absorption':
         absorption = fits.getdata(data_path + 'saury_Tau.fits')
+        absorption = absorption.astype(np.float32)
         # Change from (v, z, x) to (x*z, 1)
         absorption = np.moveaxis(absorption, 0, -1)
         y_data = absorption.reshape(-1, absorption.shape[-1])
     elif y_values == 'emission':
         emission = fits.getdata(data_path + 'saury_Tb.fits')
+        emission = emission.astype(np.float32)
         # Change from (v, z, x) to (x*z, 1)
         emission = np.moveaxis(emission, 0, -1)
         y_data = emission.reshape(-1, emission.shape[-1])
@@ -437,8 +506,10 @@ def load_seta_data(data_path, sim_type='both', x_values='emission', y_values='fr
         
         if x_values == 'emission':
             spectra = fits.getdata(data_path + f'seta_{sim}_Tb.fits')
+            spectra = spectra.astype(np.float32)
         elif x_values == 'absorption':
             spectra = fits.getdata(data_path + f'seta_{sim}_Tau.fits')
+            spectra = spectra.astype(np.float32)
         else:
             raise ValueError("x_values must be either 'emission' or 'absorption'")
         
@@ -457,6 +528,11 @@ def load_seta_data(data_path, sim_type='both', x_values='emission', y_values='fr
             fwnm = fits.getdata(data_path + f'seta_{sim}_fwnm.fits')
             rhi = fits.getdata(data_path + f'seta_{sim}_rhi.fits')
             
+            fcnm = fcnm.astype(np.float32)
+            funm = funm.astype(np.float32)
+            fwnm = fwnm.astype(np.float32)
+            rhi = rhi.astype(np.float32)
+            
             # Stack from (z, x) to (z, x, 4)
             fractions = np.stack((fcnm, funm, fwnm, rhi), axis=2)
             # Change from (z, x, 4) to (x*z, 4)
@@ -464,11 +540,13 @@ def load_seta_data(data_path, sim_type='both', x_values='emission', y_values='fr
             y_data_temp = fractions
         elif y_values == 'absorption':
             absorption = fits.getdata(data_path + f'seta_{sim}_Tau.fits')
+            absorption = absorption.astype(np.float32)
             # Change from (v, z, x) to (x*z, 1)
             absorption = np.moveaxis(absorption, 0, -1)
             y_data_temp = absorption.reshape(-1, absorption.shape[-1])
         elif y_values == 'emission':
             emission = fits.getdata(data_path + f'seta_{sim}_Tb.fits')
+            emission = emission.astype(np.float32)
             # Change from (v, z, x) to (x*z, 1)
             emission = np.moveaxis(emission, 0, -1)
             y_data_temp = emission.reshape(-1, emission.shape[-1])
@@ -579,6 +657,7 @@ def load_tigress_temp_data(data_path='/scratch/mk27/em8117/R8_2pc/', sim_number 
         print(f'Loading data for simulation {sim}')
         
         spectra = fits.getdata(f'/scratch/mk27/em8117/R8_2pc/0{sim}/{sim}_Tb_full.fits')[:,1600:1950,:]
+        spectra = spectra.astype(np.float32)
         temp = np.load(f'/scratch/mk27/em8117/R8_2pc/0{sim}/{sim}_temperature.npy')[1600:1950,:,:]
         
         all_spectra.append(spectra)
