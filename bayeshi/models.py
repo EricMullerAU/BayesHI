@@ -333,7 +333,7 @@ class SauryModel(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             if valLoss < bestValLoss:
@@ -636,7 +636,7 @@ class TPCNetAllPhases(BaseModel):
             # if lastLR != scheduler.get_last_lr():
             #     print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, MSE Train Loss: {mse_trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, MSE Train Loss: {mse_trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             # Lmao this saves every epoch instead of every run at the moment. Oops.
@@ -844,7 +844,7 @@ class BayesHIModel(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             # Lmao this saves every epoch instead of every run at the moment. Oops.
@@ -952,7 +952,7 @@ class RNNModel(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1052,7 +1052,7 @@ class LSTMSequencePredictor(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1291,7 +1291,7 @@ class LSTMSequenceToSequence(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1422,7 +1422,7 @@ class BLSTMSequenceToSequence(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1527,7 +1527,7 @@ class TransformerWithAttentionAggregation(nn.Module):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1675,7 +1675,7 @@ class SimpleCNN(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             if valLoss < bestValLoss:
@@ -1835,7 +1835,7 @@ class SimpleBNN(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             if valLoss < bestValLoss:
@@ -2064,7 +2064,7 @@ class MyBayesLSTM(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -2075,7 +2075,7 @@ class MyBayesLSTM(BaseModel):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class VAE(BaseModel):
-    def __init__(self, input_dim=1, hidden_dim=128, latent_dim=32, **kwargs):
+    def __init__(self, input_dim=256, hidden_dim=128, latent_dim=32, **kwargs):
         super().__init__(**kwargs)
         self.default_weights_path = None
         
@@ -2136,6 +2136,10 @@ class VAE(BaseModel):
         z = self.reparameterize(mu, logvar)
         recon_x = self.decode(z)
         return recon_x, mu, logvar
+
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs moving them to the correct device. Dimension handling isn't required for this model. """
+        return x.to(self.device)
     
     def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         self.to(self.device)
@@ -2160,7 +2164,7 @@ class VAE(BaseModel):
             runningLoss = 0.0
             loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
             for inputs, targets in loop:
-                inputs = inputs.to(self.device)
+                inputs = self.preprocess_inputs(inputs)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 recon_x, mu, logvar = self(inputs)
@@ -2179,7 +2183,7 @@ class VAE(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
