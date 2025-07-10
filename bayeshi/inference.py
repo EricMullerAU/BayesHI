@@ -15,7 +15,11 @@ Functions:
 """
 
 import copy
-from .models import SauryModel, BayesHIModel, TPCNetAllPhases, RNNModel, LSTMSequencePredictor, TransformerWithAttentionAggregation, SimpleCNN, SimpleBNN, LSTMSequenceToSequence, BLSTMSequenceToSequence, MyBayesLSTM
+from .models import (
+    SauryModel, BayesHIModel, TPCNetAllPhases, RNNModel, LSTMSequencePredictor, 
+    TransformerWithAttentionAggregation, SimpleCNN, SimpleBNN, LSTMSequenceToSequence, 
+    BLSTMSequenceToSequence, MyBayesLSTM, VAE
+)
 from torch.cuda import is_available
 
 MODEL_CONFIGS = {
@@ -94,6 +98,10 @@ MODEL_CONFIGS = {
     },
     'MyBayesLSTM': {
         'class': MyBayesLSTM,
+        'params': {}
+    },
+    'VAE': {
+        'class': VAE,
         'params': {}
     }
 }

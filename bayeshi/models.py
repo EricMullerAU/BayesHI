@@ -369,6 +369,7 @@ class TPCNetAllPhases(BaseModel):
         d = [1, 1] # dilation
         s = [1, 1] # stride
                 
+        self.num_output = num_output
         self.num_features = 54
         self.input_row = input_row
         self.in_channels = in_channels
@@ -381,7 +382,11 @@ class TPCNetAllPhases(BaseModel):
         self.emb_pos_encoder = PositionalEncoding(dropout = self.drop_out_rate, d_model=9, max_len=self.input_column)
         self.spec_pos_encoder = SinusoidalPositionalEncoding(dropout=self.drop_out_rate, max_len=self.input_column)
         
-        self.loss_fcn = TPCNetCustomLoss(weights=[1., 1., 1., 1.])
+        if num_output == 4:
+            self.loss_fcn = TPCNetCustomLoss(weights=[1., 1., 1., 1.])
+        else:
+            print('Warning: num_output is not 4, using MSE loss instead of TPCNetCustomLoss.')
+            self.loss_fcn = nn.MSELoss()
 
         # num_layer*8 + 8
         
@@ -558,6 +563,7 @@ class TPCNetAllPhases(BaseModel):
         x = self.flatten(x)
     
         x = self.decoder(x)
+        
         return x
 
     def preprocess_inputs(self, x):
@@ -1840,7 +1846,6 @@ class SimpleBNN(BaseModel):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 
-
 class BayesLSTM(nn.Module):
     def __init__(self, prior_mu, prior_sigma, input_size, hidden_size, num_layers=1, bias=True, batch_first=False):
         super().__init__()
@@ -1959,8 +1964,11 @@ class BayesLSTM(nn.Module):
         return output, (h_n, c_n)
 
 class MyBayesLSTM(BaseModel):
-    def __init__(self, input_dim=1, hidden_dim=128, prior_mu=0.0, prior_sigma=0.1, num_layers=2, output_dim=1, kl_weight=0.01, **kwargs):
+    def __init__(self, input_dim=1, hidden_dim=128, prior_mu=0.0, prior_sigma=0.1, num_layers=2, output_dim=1, kl_weight=0.01, clamp=None, **kwargs):
         super().__init__(**kwargs)
+        self.default_weights_path = root_dir / 'weights' / 'my_blstm.pth'
+        
+        self.clamp = clamp
         self.kl_weight = kl_weight
 
         self.embedding = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma, in_features=input_dim, out_features=hidden_dim)
@@ -1996,6 +2004,16 @@ class MyBayesLSTM(BaseModel):
             
         # Apply the spectral refiner network
         # x = self.refiner(x)
+        
+        # Make sure the elements of the sequence are between 0 and 1
+        # Only clamp if requested, and only for inference/post-processing, not during training
+        if not self.training:
+            if self.clamp is True:
+                x = torch.clamp(x, 0, 1)
+            elif isinstance(self.clamp, (tuple, list)) and len(self.clamp) == 2:
+                x = torch.clamp(x, self.clamp[0], self.clamp[1])
+            elif self.clamp is not None:
+                raise ValueError("clamp must be True, None, or a tuple/list of two values (min, max)")
 
         return x
     
@@ -2055,3 +2073,119 @@ class MyBayesLSTM(BaseModel):
                     torch.save(self.state_dict(), checkpoint_path)
                     
         return trainErrors, valErrors, trainedEpochs, epochTimes
+
+class VAE(BaseModel):
+    def __init__(self, input_dim=1, hidden_dim=128, latent_dim=32, **kwargs):
+        super().__init__(**kwargs)
+        self.default_weights_path = None
+        
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.latent_dim = latent_dim
+        
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+        
+        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, latent_dim)
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, input_dim),
+            nn.Sigmoid()  # Assuming input is normalized between 0 and 1
+        )
+        
+    def encode(self, x):
+        """
+        Encodes the input x into a latent representation.
+        Returns the mean and log variance of the latent distribution.
+        """
+        h = self.encoder(x)
+        mu = self.fc_mu(h)
+        logvar = self.fc_logvar(h)
+        return mu, logvar
+    
+    def reparameterize(self, mu, logvar):
+        """
+        Reparameterization trick to sample from the latent distribution.
+        Returns a sample from the latent space.
+        """
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+    
+    def decode(self, z):
+        """
+        Decodes the latent representation z back to the original input space.
+        """
+        return self.decoder(z)
+    
+    def forward(self, x):
+        """
+        Forward pass through the VAE.
+        Returns the reconstructed output and the latent representation.
+        """
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        recon_x = self.decode(z)
+        return recon_x, mu, logvar
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
+        self.to(self.device)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        criterion = nn.MSELoss()
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+        
+        for epoch in range(n_epochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = inputs.to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                recon_x, mu, logvar = self(inputs)
+                loss = criterion(recon_x, targets) + 0.5 * torch.mean(torch.exp(logvar) + mu**2 - 1. - logvar)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader, criterion)
+            valErrors.append(valLoss)
+            
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+                
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+            
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+                    
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+    

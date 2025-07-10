@@ -136,7 +136,7 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
         n_sims = len(active_sims)
         n_per_sim = n_total // n_sims
         remainder = n_total % n_sims
-        print(f"Splitting {n_total} samples across {n_sims} simulations: {n_per_sim} per simulation, with {remainder} extra samples distributed")
+        print(f"Drawing {n_total} samples across {n_sims} simulations: {n_per_sim} per simulation, with {remainder} extra samples distributed")
         rng = np.random.RandomState(random_state)
         for i, sim in enumerate(active_sims):
             x, y = sim_data[sim]
