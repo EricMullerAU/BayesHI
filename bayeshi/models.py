@@ -71,6 +71,10 @@ from pathlib import Path
 from blitz.modules import BayesianLSTM
 from blitz.utils import variational_estimator
 
+# For VAE visualiser.
+import matplotlib.pyplot as plt
+import numpy as np
+
 root_dir = Path(__file__).resolve().parent
 
 class PositionalEncoding(nn.Module):
@@ -364,18 +368,14 @@ class TPCNetAllPhases(BaseModel):
     def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0., **kwargs):
         super().__init__(**kwargs)
         self.default_weights_path = root_dir / 'weights/tpcnet.pth'
-
-        p = [0, 0] # padding
-        d = [1, 1] # dilation
-        s = [1, 1] # stride
                 
         self.num_output = num_output
-        self.num_features = 54
+        # self.num_features = 54
         self.input_row = input_row
         self.in_channels = in_channels
         self.input_column = input_column
 
-        kernel_wid = 33
+        # kernel_wid = 33
         
         self.drop_out_rate = drop_out_rate
         # self.lpe = lpe
@@ -391,52 +391,52 @@ class TPCNetAllPhases(BaseModel):
         # num_layer*8 + 8
         
         # CNN layers (outchannels = outchannels-8)
-        kernelsize = (1,7) if (input_row < 2) else (2,7)
+        # kernelsize = (1,7) if (input_row < 2) else (2,7)
         
-        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=72, kernel_size=kernelsize, stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=72, kernel_size=(1,7), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn1   = nn.BatchNorm2d(72)
-        Hout, Wout = self.get_output_size(72, input_column, k=kernelsize, s=s, p=p, d=d)
+        Hout, Wout = self.get_output_size(72, input_column, k=(1,7), s=[1,1], p=[0,0], d=[1,1])
         # print('>>> Conv2: ', Hout, Wout)
         
-        self.conv2 = nn.Conv2d(in_channels=72, out_channels=64, kernel_size=(1,kernel_wid), stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.conv2 = nn.Conv2d(in_channels=72, out_channels=64, kernel_size=(1,33), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn2 = nn.BatchNorm2d(64)
-        Hout, Wout = self.get_output_size(64, Wout, k=(1,kernel_wid), s=s, p=p, d=d)
+        Hout, Wout = self.get_output_size(64, Wout, k=(1,33), s=[1,1], p=[0,0], d=[1,1])
         # print('>>> Conv2: ', Hout, Wout)
 
-        self.conv3 = nn.Conv2d(in_channels=64, out_channels=56, kernel_size=kernelsize, stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.conv3 = nn.Conv2d(in_channels=64, out_channels=56, kernel_size=(1,7), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn3 = nn.BatchNorm2d(56)
-        Hout, Wout = self.get_output_size(56, Wout, k = kernelsize, s=s, p=p, d=d)
+        Hout, Wout = self.get_output_size(56, Wout, k = (1,7), s=[1,1], p=[0,0], d=[1,1])
         # print('>>> Conv2: ', Hout, Wout)
         
-        self.conv4 = nn.Conv2d(in_channels=56, out_channels=48,  kernel_size=(1,kernel_wid), stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.conv4 = nn.Conv2d(in_channels=56, out_channels=48,  kernel_size=(1,33), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn4 = nn.BatchNorm2d(48)
-        Hout, Wout = self.get_output_size(48, Wout, k = (1,kernel_wid), s=s, p=p, d=d)
+        Hout, Wout = self.get_output_size(48, Wout, k = (1,33), s=[1,1], p=[0,0], d=[1,1])
         # print('>>> Conv2: ', Hout, Wout)
         
-        self.conv5 = nn.Conv2d(in_channels=48, out_channels=40,  kernel_size=kernelsize, stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.conv5 = nn.Conv2d(in_channels=48, out_channels=40,  kernel_size=(1,7), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn5 = nn.BatchNorm2d(40)
-        Hout, Wout = self.get_output_size(40, Wout, k = kernelsize, s=s, p=p, d=d)
+        Hout, Wout = self.get_output_size(40, Wout, k = (1,7), s=[1,1], p=[0,0], d=[1,1])
         # print('>>> Conv2: ', Hout, Wout)
         
-        self.conv6 = nn.Conv2d(in_channels=40, out_channels=32,  kernel_size=(1,kernel_wid), stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.conv6 = nn.Conv2d(in_channels=40, out_channels=32,  kernel_size=(1,3), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn6 = nn.BatchNorm2d(32)
-        Hout, Wout = self.get_output_size(32, Wout, k = (1,kernel_wid), s=s, p=p, d=d)
+        Hout, Wout = self.get_output_size(32, Wout, k = (1,33), s=[1,1], p=[0,0], d=[1,1])
         # print('>>> Conv2: ', Hout, Wout)
         
-        self.conv7 = nn.Conv2d(in_channels=32, out_channels=16,  kernel_size=kernelsize, stride=1, padding=0,  bias=True, padding_mode='zeros')
-        self.bn7 = nn.BatchNorm2d(16)
-        Hout, Wout = self.get_output_size(16, Wout, k = kernelsize, s=s, p=p, d=d)
+        self.conv7 = nn.Conv2d(in_channels=32, out_channels=24,  kernel_size=(1,7), stride=1, padding=0,  bias=True, padding_mode='zeros')
+        self.bn7 = nn.BatchNorm2d(24)
+        Hout, Wout = self.get_output_size(24, Wout, k = (1,7), s=[1,1], p=[0,0], d=[1,1])
         # print('>>> Conv2: ', Hout, Wout)
         
-        self.conv8 = nn.Conv2d(in_channels=16, out_channels=8,  kernel_size=(1,kernel_wid), stride=1, padding=0, bias=True, padding_mode='zeros')
-        self.bn8 = nn.BatchNorm2d(8)
-        Hout, Wout = self.get_output_size(8, Wout, k = (1,kernel_wid), s=s, p=p, d=d)
+        self.conv8 = nn.Conv2d(in_channels=24, out_channels=16,  kernel_size=(1,33), stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.bn8 = nn.BatchNorm2d(16)
+        Hout, Wout = self.get_output_size(16, Wout, k = (1,33), s=[1,1], p=[0,0], d=[1,1])
         # print('>>> Conv2: ', Hout, Wout)
 
 
-        # self.conv9 = nn.Conv2d(in_channels=8, out_channels=4,  kernel_size=kernelsize, stride=1, padding=0, bias=True, padding_mode='zeros')
+        # self.conv9 = nn.Conv2d(in_channels=8, out_channels=4,  kernel_size=(1,7), stride=1, padding=0, bias=True, padding_mode='zeros')
         # self.bn9 = nn.BatchNorm2d(4)
-        # Hout, Wout = self.get_output_size(4, Wout, k = kernelsize, s=s, p=p, d=d)
+        # Hout, Wout = self.get_output_size(4, Wout, k = (1,7), s=s, p=p, d=d)
         # # print('>>> Conv2: ', Hout, Wout)
 
         # self.conv10 = nn.Conv2d(in_channels=4, out_channels=2,  kernel_size=(1,kernel_wid), stride=1, padding=0, bias=True, padding_mode='zeros')
@@ -454,8 +454,8 @@ class TPCNetAllPhases(BaseModel):
         # else:
         #     self.linear = nn.Linear(int(1904*(input_row-1)), 54)
 
-        self.linear = nn.Linear(Hout*Wout, 54)
         self.flatten = nn.Flatten()
+        self.linear = nn.Linear(Hout*Wout, 54)
         
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
@@ -2099,7 +2099,6 @@ class VAE(BaseModel):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, input_dim),
-            nn.Sigmoid()  # Assuming input is normalized between 0 and 1
         )
         
     def encode(self, x):
@@ -2192,4 +2191,46 @@ class VAE(BaseModel):
                     torch.save(self.state_dict(), checkpoint_path)
                     
         return trainErrors, valErrors, trainedEpochs, epochTimes
-    
+
+    # Add some function/s that lets me visualise the latent space
+    def visualize_latent_space(self, dataloader, num_samples=1000, color_by=None):
+        """
+        Visualizes the latent space of the VAE by sampling points and plotting them.
+        If color_by is not None, it should be a function that takes the targets and returns a value for coloring.
+        For regression, you can pass a lambda to color_by to select a target dimension, e.g. color_by=lambda y: y[:, 0]
+        """
+        self.eval()
+        all_latents = []
+        all_colors = []
+
+        with torch.no_grad():
+            for inputs, targets in dataloader:
+                inputs = self.preprocess_inputs(inputs)
+                mu, _ = self.encode(inputs)
+                all_latents.append(mu.cpu().numpy())
+                if color_by is not None:
+                    color_vals = color_by(targets.cpu().numpy())
+                    all_colors.append(color_vals)
+                if len(all_latents) * inputs.size(0) >= num_samples:
+                    break
+
+        all_latents = np.concatenate(all_latents)[:num_samples]
+        if color_by is not None and all_colors:
+            all_colors = np.concatenate(all_colors)[:num_samples]
+        else:
+            all_colors = None
+
+        plt.figure(figsize=(10, 8))
+        if all_latents.shape[1] >= 2:
+            if all_colors is not None:
+                plt.scatter(all_latents[:, 0], all_latents[:, 1], c=all_colors, cmap='viridis', s=5)
+                plt.colorbar()
+            else:
+                plt.scatter(all_latents[:, 0], all_latents[:, 1], s=5)
+            plt.xlabel('Latent Dimension 1')
+            plt.ylabel('Latent Dimension 2')
+        else:
+            plt.scatter(all_latents[:, 0], np.zeros_like(all_latents[:, 0]), c=all_colors if all_colors is not None else 'b', s=5)
+            plt.xlabel('Latent Dimension 1')
+        plt.title('Latent Space Visualization')
+        plt.show()
