@@ -393,46 +393,39 @@ class TPCNetAllPhases(BaseModel):
         # CNN layers (outchannels = outchannels-8)
         # kernelsize = (1,7) if (input_row < 2) else (2,7)
         
+        
         self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=72, kernel_size=(1,7), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn1   = nn.BatchNorm2d(72)
         Hout, Wout = self.get_output_size(72, input_column, k=(1,7), s=[1,1], p=[0,0], d=[1,1])
-        # print('>>> Conv2: ', Hout, Wout)
         
         self.conv2 = nn.Conv2d(in_channels=72, out_channels=64, kernel_size=(1,33), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn2 = nn.BatchNorm2d(64)
         Hout, Wout = self.get_output_size(64, Wout, k=(1,33), s=[1,1], p=[0,0], d=[1,1])
-        # print('>>> Conv2: ', Hout, Wout)
-
+        
         self.conv3 = nn.Conv2d(in_channels=64, out_channels=56, kernel_size=(1,7), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn3 = nn.BatchNorm2d(56)
         Hout, Wout = self.get_output_size(56, Wout, k = (1,7), s=[1,1], p=[0,0], d=[1,1])
-        # print('>>> Conv2: ', Hout, Wout)
         
         self.conv4 = nn.Conv2d(in_channels=56, out_channels=48,  kernel_size=(1,33), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn4 = nn.BatchNorm2d(48)
         Hout, Wout = self.get_output_size(48, Wout, k = (1,33), s=[1,1], p=[0,0], d=[1,1])
-        # print('>>> Conv2: ', Hout, Wout)
         
         self.conv5 = nn.Conv2d(in_channels=48, out_channels=40,  kernel_size=(1,7), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn5 = nn.BatchNorm2d(40)
         Hout, Wout = self.get_output_size(40, Wout, k = (1,7), s=[1,1], p=[0,0], d=[1,1])
-        # print('>>> Conv2: ', Hout, Wout)
         
-        self.conv6 = nn.Conv2d(in_channels=40, out_channels=32,  kernel_size=(1,3), stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.conv6 = nn.Conv2d(in_channels=40, out_channels=32,  kernel_size=(1,33), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn6 = nn.BatchNorm2d(32)
         Hout, Wout = self.get_output_size(32, Wout, k = (1,33), s=[1,1], p=[0,0], d=[1,1])
-        # print('>>> Conv2: ', Hout, Wout)
         
         self.conv7 = nn.Conv2d(in_channels=32, out_channels=24,  kernel_size=(1,7), stride=1, padding=0,  bias=True, padding_mode='zeros')
         self.bn7 = nn.BatchNorm2d(24)
         Hout, Wout = self.get_output_size(24, Wout, k = (1,7), s=[1,1], p=[0,0], d=[1,1])
-        # print('>>> Conv2: ', Hout, Wout)
         
         self.conv8 = nn.Conv2d(in_channels=24, out_channels=16,  kernel_size=(1,33), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn8 = nn.BatchNorm2d(16)
         Hout, Wout = self.get_output_size(16, Wout, k = (1,33), s=[1,1], p=[0,0], d=[1,1])
-        # print('>>> Conv2: ', Hout, Wout)
-
+        
 
         # self.conv9 = nn.Conv2d(in_channels=8, out_channels=4,  kernel_size=(1,7), stride=1, padding=0, bias=True, padding_mode='zeros')
         # self.bn9 = nn.BatchNorm2d(4)
@@ -455,6 +448,7 @@ class TPCNetAllPhases(BaseModel):
         #     self.linear = nn.Linear(int(1904*(input_row-1)), 54)
 
         self.flatten = nn.Flatten()
+        
         self.linear = nn.Linear(Hout*Wout, 54)
         
         self.transformer = nn.TransformerEncoder(
@@ -485,84 +479,71 @@ class TPCNetAllPhases(BaseModel):
 
 
     def forward(self, x):
-        x =  self.spec_pos_encoder(x)
+        # print("Input shape:", x.shape)
+        
+        x = self.spec_pos_encoder(x)
+        # print("After spec_pos_encoder:", x.shape)
         
         x = self.conv1(x)
         x = self.bn1(x)
         x = F.relu(x)
-        # print(2, x.size())
+        # print("After conv1:", x.shape)
         
         x = self.conv2(x)
         x = self.bn2(x)
         x = F.relu(x)
-        # print(3, x.size())
+        # print("After conv2:", x.shape)
         
         x = self.conv3(x)
         x = self.bn3(x)
         x = F.relu(x)
-        # print(x.size())
+        # print("After conv3:", x.shape)
         
         x = self.conv4(x)
         x = self.bn4(x)
         x = F.relu(x)
-        # print(x.size())
-        #
+        # print("After conv4:", x.shape)
+        
         x = self.conv5(x)
         x = self.bn5(x)
         x = F.relu(x)
-        # print(x.size())
-        #
+        # print("After conv5:", x.shape)
+        
         x = self.conv6(x)
         x = self.bn6(x)
         x = F.relu(x)
-        # print(x.size())
-        #
+        # print("After conv6:", x.shape)
+        
         x = self.conv7(x)
         x = self.bn7(x)
         x = F.relu(x)
-        # print(x.size())
-        #
+        # print("After conv7:", x.shape)
+        
         x = self.conv8(x)
         x = self.bn8(x)
         x = F.relu(x)
-        # print(x.size())
+        # print("After conv8:", x.shape)
 
-        # x = self.conv9(x)
-        # x = self.bn9(x)
-        # x = F.relu(x)
-        # # print(x.size())
-
-        # x = self.conv10(x)
-        # x = self.bn10(x)
-        # x = F.relu(x)
-        # print(10, x.size())
-        #x = torch.squeeze(x)
-        #x = x.reshape(-1, x.shape[2], x.shape[1])
-
-        # x = self.conv11(x)
-        # x = self.bn11(x)
-        # x = F.relu(x)
-
-        #
-        #print(3, x.size()) #= (20,8,1,238)
-        x = self.flatten(x) #1904
-        # print('Flatten: ', x.size()) # [10, 402]
+        x = self.flatten(x)
+        # print("After flatten:", x.shape)
 
         x = self.linear(x)
-        # print('linear: ', x.size()) # [10, 54]
+        # print("After linear:", x.shape)
         
-        #print(3, x.size())
         x = x.reshape(x.shape[0], -1, 9)
-        # print('x reshape (before trans): ', x.size())
+        # print("After reshape:", x.shape)
         
-        # Add positional encoding to embedding matrix
-        x = self.emb_pos_encoder(x)
+        # x = self.emb_pos_encoder(x) # TODO: TAKEN OUT, TRY FOR CALLUM AGAIN?
+        # print("After emb_pos_encoder:", x.shape)
         
-        # Transformer
         x = self.transformer(x)
+        # print("After transformer:", x.shape)
+        
         x = self.flatten(x)
+        # print("After flatten (2):", x.shape)
     
         x = self.decoder(x)
+        # print("After decoder:", x.shape)
         
         return x
 
