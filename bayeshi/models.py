@@ -75,6 +75,10 @@ from pathlib import Path
 from blitz.modules import BayesianLSTM
 from blitz.utils import variational_estimator
 
+# For VAE visualiser.
+import matplotlib.pyplot as plt
+import numpy as np
+
 root_dir = Path(__file__).resolve().parent
 
 class PositionalEncoding(nn.Module):
@@ -155,7 +159,6 @@ class BaseModel(nn.Module):
         if device is None:
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.device = torch.device(device)
-        self.to(self.device)
         self.verbose = verbose
         self.default_weights_path = None  # to be set in subclasses if pretrained weights are available
 
@@ -163,10 +166,10 @@ class BaseModel(nn.Module):
         """ Default implementation. Override in subclasses if needed. """
         return x.to(self.device)
 
-    def predict(self, test_loader, num_predictions=1):
+    def predict(self, test_loader, n_predictions=1):
         self.eval()
         all_predictions = []
-        loop = tqdm(range(num_predictions), desc='Predicting', file=sys.stdout) if self.verbose else range(num_predictions)
+        loop = tqdm(range(n_predictions), desc='Predicting', file=sys.stdout) if self.verbose else range(n_predictions)
         for _ in loop:
             predictions = []
             with torch.no_grad():
@@ -178,7 +181,7 @@ class BaseModel(nn.Module):
                         outputs = outputs[0]
                     predictions.append(outputs)
             all_predictions.append(torch.cat(predictions, dim=0))
-        return torch.cat(all_predictions, dim=0)
+        return torch.stack(all_predictions, dim=0)
 
     def evaluate(self, loader, criterion=nn.MSELoss()):
         self.eval()
@@ -206,8 +209,8 @@ class BaseModel(nn.Module):
         print('Model loaded successfully')
 
 class SauryModel(BaseModel):
-    def __init__(self, cnnBlocks=1, kernelNumber=12, kernelWidth=51, MHANumber=4, transformerNumber=1, priorMu=0.0, priorSigma=0.01, posEncType='off'):
-        super().__init__()
+    def __init__(self, cnn_blocks=1, kernel_number=12, kernel_width=51, mha_number=4, transformer_number=1, prior_mu=0.0, prior_sigma=0.01, pos_enc_type='off', **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = root_dir / 'weights/saury.pth'
         
         # Convolutional layers
@@ -215,22 +218,22 @@ class SauryModel(BaseModel):
         self.pool_layers = nn.ModuleList()
         in_channels = 1
         Hout, Wout = 1, 256  # Initial input size
-        for i in range(cnnBlocks):
+        for i in range(cnn_blocks):
             self.conv_layers.append(
             bnn.BayesConv2d(
-                prior_mu=priorMu,
-                prior_sigma=priorSigma,
+                prior_mu=prior_mu,
+                prior_sigma=prior_sigma,
                 in_channels=in_channels,
                 out_channels=12*(i+1),
-                kernel_size=(1, kernelWidth),
+                kernel_size=(1, kernel_width),
                 padding=(0, 0)
             )
             )
             self.conv_layers.append(nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2)))
             self.conv_layers.append(
             bnn.BayesConv2d(
-                prior_mu=priorMu,
-                prior_sigma=priorSigma,
+                prior_mu=prior_mu,
+                prior_sigma=prior_sigma,
                 in_channels=12*(i+1),
                 out_channels=12*(i+1),
                 kernel_size=(1, 7),
@@ -238,23 +241,26 @@ class SauryModel(BaseModel):
             )
             )
             in_channels = 12*(i+1)
-            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernelWidth], s=[1, 1], p=[0, 0], d=[1, 1])
+            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernel_width], s=[1, 1], p=[0, 0], d=[1, 1])
             Wout = int(Wout / 2)
             Hout, Wout = self.get_output_size(Hout, Wout, k=[1, 7], s=[1, 1], p=[0, 0], d=[1, 1])
             
-        if posEncType == 'sinusoidal':
-            self.positional_encoding = PositionalEncoding(d_model=kernelNumber)
-        elif posEncType == 'stochastic':
-            self.positional_encoding = StochasticPositionalEncoding(d_model=kernelNumber)
+        if pos_enc_type == 'sinusoidal':
+            self.positional_encoding = PositionalEncoding(d_model=kernel_number)
+        elif pos_enc_type == 'stochastic':
+            self.positional_encoding = StochasticPositionalEncoding(d_model=kernel_number)
         else:
             self.positional_encoding = None
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=kernelNumber, nhead=MHANumber, batch_first=False),
-            num_layers=transformerNumber
+            nn.TransformerEncoderLayer(d_model=kernel_number, nhead=mha_number, batch_first=False),
+            num_layers=transformer_number
         )
         self.flatten = nn.Flatten()
-        self.decoder = bnn.BayesLinear(prior_mu=priorMu, prior_sigma=priorSigma,
-                                        in_features=kernelNumber * Wout, out_features=4)
+        self.decoder = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma,
+                                        in_features=kernel_number * Wout, out_features=4)
+    
+        self.to(self.device)
+
 
     def forward(self, x):
         for conv in self.conv_layers:
@@ -279,17 +285,17 @@ class SauryModel(BaseModel):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
 
-    def lossFunction(self, outputs, targets, KLweight):
+    def lossFunction(self, outputs, targets, kl_weight):
         MSE = nn.MSELoss()
         BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
-        return MSE(outputs, targets) + KLweight * BKLoss(self)
+        return MSE(outputs, targets) + kl_weight * BKLoss(self)
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 50, learningRate = 0.0005, schedulerStep = 15, stopperPatience = 5, stopperTol = 1e-4, maxKLweight = 0.01, maxKLepoch = 50):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs = 50, learning_rate = 0.0005, scheduler_step = 15, stopper_patience = 5, stopper_tol = 1e-4, max_kl_weight = 0.01, max_kl_epoch = 50):
         self.to(self.device)
         criterion = self.lossFunction
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -304,8 +310,8 @@ class SauryModel(BaseModel):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
-            KLweight = maxKLweight * min(1, epoch / maxKLepoch)
+        for epoch in range(n_epochs):
+            kl_weight = max_kl_weight * min(1, epoch / max_kl_epoch)
             startTime = time.time()
             self.train()
             runningLoss = 0.0
@@ -315,7 +321,7 @@ class SauryModel(BaseModel):
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
-                loss = criterion(outputs, targets, KLweight)
+                loss = criterion(outputs, targets, kl_weight)
                 loss.backward()
                 optimizer.step()
                 runningLoss += loss.item()
@@ -335,7 +341,7 @@ class SauryModel(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             if valLoss < bestValLoss:
@@ -363,77 +369,71 @@ class TPCNetCustomLoss(nn.Module):
         return total_loss
 
 class TPCNetAllPhases(BaseModel):
-    def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0.):
-        super().__init__()
+    def __init__(self, num_output=4, in_channels=1, input_row=1, input_column=256, drop_out_rate=0., **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = root_dir / 'weights/tpcnet.pth'
-
-        p = [0, 0] # padding
-        d = [1, 1] # dilation
-        s = [1, 1] # stride
                 
-        self.num_features = 54
+        self.num_output = num_output
+        # self.num_features = 54
         self.input_row = input_row
         self.in_channels = in_channels
         self.input_column = input_column
 
-        kernel_wid = 33
+        # kernel_wid = 33
         
         self.drop_out_rate = drop_out_rate
         # self.lpe = lpe
         self.emb_pos_encoder = PositionalEncoding(dropout = self.drop_out_rate, d_model=9, max_len=self.input_column)
         self.spec_pos_encoder = SinusoidalPositionalEncoding(dropout=self.drop_out_rate, max_len=self.input_column)
         
-        self.loss_fcn = TPCNetCustomLoss(weights=[1., 1., 1., 1.])
+        if num_output == 4:
+            self.loss_fcn = TPCNetCustomLoss(weights=[1., 1., 1., 1.])
+        else:
+            print('Warning: num_output is not 4, using MSE loss instead of TPCNetCustomLoss.')
+            self.loss_fcn = nn.MSELoss()
 
         # num_layer*8 + 8
         
         # CNN layers (outchannels = outchannels-8)
-        kernelsize = (1,7) if (input_row < 2) else (2,7)
+        # kernelsize = (1,7) if (input_row < 2) else (2,7)
         
-        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=72, kernel_size=kernelsize, stride=1, padding=0, bias=True, padding_mode='zeros')
+        
+        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=72, kernel_size=(1,7), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn1   = nn.BatchNorm2d(72)
-        Hout, Wout = self.get_output_size(72, input_column, k=kernelsize, s=s, p=p, d=d)
-        # print('>>> Conv2: ', Hout, Wout)
+        Hout, Wout = self.get_output_size(72, input_column, k=(1,7), s=[1,1], p=[0,0], d=[1,1])
         
-        self.conv2 = nn.Conv2d(in_channels=72, out_channels=64, kernel_size=(1,kernel_wid), stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.conv2 = nn.Conv2d(in_channels=72, out_channels=64, kernel_size=(1,33), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn2 = nn.BatchNorm2d(64)
-        Hout, Wout = self.get_output_size(64, Wout, k=(1,kernel_wid), s=s, p=p, d=d)
-        # print('>>> Conv2: ', Hout, Wout)
-
-        self.conv3 = nn.Conv2d(in_channels=64, out_channels=56, kernel_size=kernelsize, stride=1, padding=0, bias=True, padding_mode='zeros')
+        Hout, Wout = self.get_output_size(64, Wout, k=(1,33), s=[1,1], p=[0,0], d=[1,1])
+        
+        self.conv3 = nn.Conv2d(in_channels=64, out_channels=56, kernel_size=(1,7), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn3 = nn.BatchNorm2d(56)
-        Hout, Wout = self.get_output_size(56, Wout, k = kernelsize, s=s, p=p, d=d)
-        # print('>>> Conv2: ', Hout, Wout)
+        Hout, Wout = self.get_output_size(56, Wout, k = (1,7), s=[1,1], p=[0,0], d=[1,1])
         
-        self.conv4 = nn.Conv2d(in_channels=56, out_channels=48,  kernel_size=(1,kernel_wid), stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.conv4 = nn.Conv2d(in_channels=56, out_channels=48,  kernel_size=(1,33), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn4 = nn.BatchNorm2d(48)
-        Hout, Wout = self.get_output_size(48, Wout, k = (1,kernel_wid), s=s, p=p, d=d)
-        # print('>>> Conv2: ', Hout, Wout)
+        Hout, Wout = self.get_output_size(48, Wout, k = (1,33), s=[1,1], p=[0,0], d=[1,1])
         
-        self.conv5 = nn.Conv2d(in_channels=48, out_channels=40,  kernel_size=kernelsize, stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.conv5 = nn.Conv2d(in_channels=48, out_channels=40,  kernel_size=(1,7), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn5 = nn.BatchNorm2d(40)
-        Hout, Wout = self.get_output_size(40, Wout, k = kernelsize, s=s, p=p, d=d)
-        # print('>>> Conv2: ', Hout, Wout)
+        Hout, Wout = self.get_output_size(40, Wout, k = (1,7), s=[1,1], p=[0,0], d=[1,1])
         
-        self.conv6 = nn.Conv2d(in_channels=40, out_channels=32,  kernel_size=(1,kernel_wid), stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.conv6 = nn.Conv2d(in_channels=40, out_channels=32,  kernel_size=(1,33), stride=1, padding=0, bias=True, padding_mode='zeros')
         self.bn6 = nn.BatchNorm2d(32)
-        Hout, Wout = self.get_output_size(32, Wout, k = (1,kernel_wid), s=s, p=p, d=d)
-        # print('>>> Conv2: ', Hout, Wout)
+        Hout, Wout = self.get_output_size(32, Wout, k = (1,33), s=[1,1], p=[0,0], d=[1,1])
         
-        self.conv7 = nn.Conv2d(in_channels=32, out_channels=16,  kernel_size=kernelsize, stride=1, padding=0,  bias=True, padding_mode='zeros')
-        self.bn7 = nn.BatchNorm2d(16)
-        Hout, Wout = self.get_output_size(16, Wout, k = kernelsize, s=s, p=p, d=d)
-        # print('>>> Conv2: ', Hout, Wout)
+        self.conv7 = nn.Conv2d(in_channels=32, out_channels=24,  kernel_size=(1,7), stride=1, padding=0,  bias=True, padding_mode='zeros')
+        self.bn7 = nn.BatchNorm2d(24)
+        Hout, Wout = self.get_output_size(24, Wout, k = (1,7), s=[1,1], p=[0,0], d=[1,1])
         
-        self.conv8 = nn.Conv2d(in_channels=16, out_channels=8,  kernel_size=(1,kernel_wid), stride=1, padding=0, bias=True, padding_mode='zeros')
-        self.bn8 = nn.BatchNorm2d(8)
-        Hout, Wout = self.get_output_size(8, Wout, k = (1,kernel_wid), s=s, p=p, d=d)
-        # print('>>> Conv2: ', Hout, Wout)
+        self.conv8 = nn.Conv2d(in_channels=24, out_channels=16,  kernel_size=(1,33), stride=1, padding=0, bias=True, padding_mode='zeros')
+        self.bn8 = nn.BatchNorm2d(16)
+        Hout, Wout = self.get_output_size(16, Wout, k = (1,33), s=[1,1], p=[0,0], d=[1,1])
+        
 
-
-        # self.conv9 = nn.Conv2d(in_channels=8, out_channels=4,  kernel_size=kernelsize, stride=1, padding=0, bias=True, padding_mode='zeros')
+        # self.conv9 = nn.Conv2d(in_channels=8, out_channels=4,  kernel_size=(1,7), stride=1, padding=0, bias=True, padding_mode='zeros')
         # self.bn9 = nn.BatchNorm2d(4)
-        # Hout, Wout = self.get_output_size(4, Wout, k = kernelsize, s=s, p=p, d=d)
+        # Hout, Wout = self.get_output_size(4, Wout, k = (1,7), s=s, p=p, d=d)
         # # print('>>> Conv2: ', Hout, Wout)
 
         # self.conv10 = nn.Conv2d(in_channels=4, out_channels=2,  kernel_size=(1,kernel_wid), stride=1, padding=0, bias=True, padding_mode='zeros')
@@ -451,8 +451,9 @@ class TPCNetAllPhases(BaseModel):
         # else:
         #     self.linear = nn.Linear(int(1904*(input_row-1)), 54)
 
-        self.linear = nn.Linear(Hout*Wout, 54)
         self.flatten = nn.Flatten()
+        
+        self.linear = nn.Linear(Hout*Wout, 54)
         
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
@@ -477,86 +478,77 @@ class TPCNetAllPhases(BaseModel):
                 m.bias.data.zero_()
             elif isinstance(m, nn.Linear):
                 m.bias.data.zero_()
+                
+        self.to(self.device)
+
 
     def forward(self, x):
-        x =  self.spec_pos_encoder(x)
+        # print("Input shape:", x.shape)
+        
+        x = self.spec_pos_encoder(x)
+        # print("After spec_pos_encoder:", x.shape)
         
         x = self.conv1(x)
         x = self.bn1(x)
         x = F.relu(x)
-        # print(2, x.size())
+        # print("After conv1:", x.shape)
         
         x = self.conv2(x)
         x = self.bn2(x)
         x = F.relu(x)
-        # print(3, x.size())
+        # print("After conv2:", x.shape)
         
         x = self.conv3(x)
         x = self.bn3(x)
         x = F.relu(x)
-        # print(x.size())
+        # print("After conv3:", x.shape)
         
         x = self.conv4(x)
         x = self.bn4(x)
         x = F.relu(x)
-        # print(x.size())
-        #
+        # print("After conv4:", x.shape)
+        
         x = self.conv5(x)
         x = self.bn5(x)
         x = F.relu(x)
-        # print(x.size())
-        #
+        # print("After conv5:", x.shape)
+        
         x = self.conv6(x)
         x = self.bn6(x)
         x = F.relu(x)
-        # print(x.size())
-        #
+        # print("After conv6:", x.shape)
+        
         x = self.conv7(x)
         x = self.bn7(x)
         x = F.relu(x)
-        # print(x.size())
-        #
+        # print("After conv7:", x.shape)
+        
         x = self.conv8(x)
         x = self.bn8(x)
         x = F.relu(x)
-        # print(x.size())
+        # print("After conv8:", x.shape)
 
-        # x = self.conv9(x)
-        # x = self.bn9(x)
-        # x = F.relu(x)
-        # # print(x.size())
-
-        # x = self.conv10(x)
-        # x = self.bn10(x)
-        # x = F.relu(x)
-        # print(10, x.size())
-        #x = torch.squeeze(x)
-        #x = x.reshape(-1, x.shape[2], x.shape[1])
-
-        # x = self.conv11(x)
-        # x = self.bn11(x)
-        # x = F.relu(x)
-
-        #
-        #print(3, x.size()) #= (20,8,1,238)
-        x = self.flatten(x) #1904
-        # print('Flatten: ', x.size()) # [10, 402]
+        x = self.flatten(x)
+        # print("After flatten:", x.shape)
 
         x = self.linear(x)
-        # print('linear: ', x.size()) # [10, 54]
+        # print("After linear:", x.shape)
         
-        #print(3, x.size())
         x = x.reshape(x.shape[0], -1, 9)
-        # print('x reshape (before trans): ', x.size())
+        # print("After reshape:", x.shape)
         
-        # Add positional encoding to embedding matrix
-        x = self.emb_pos_encoder(x)
+        # x = self.emb_pos_encoder(x) # TODO: TAKEN OUT, TRY FOR CALLUM AGAIN?
+        # print("After emb_pos_encoder:", x.shape)
         
-        # Transformer
         x = self.transformer(x)
+        # print("After transformer:", x.shape)
+        
         x = self.flatten(x)
+        # print("After flatten (2):", x.shape)
     
         x = self.decoder(x)
+        # print("After decoder:", x.shape)
+        
         return x
 
     def preprocess_inputs(self, x):
@@ -568,12 +560,12 @@ class TPCNetAllPhases(BaseModel):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 60, learningRate = 5e-3):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs = 60, learning_rate = 5e-3):
         self.to(self.device)
         criterion = self.loss_fcn
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[nEpochs//2], gamma=0.1, last_epoch=-1)
-        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[n_epochs//2], gamma=0.1, last_epoch=-1)
+        # earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -590,7 +582,7 @@ class TPCNetAllPhases(BaseModel):
         # print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             startTime = time.time()
             self.train()
             runningLoss = 0.0
@@ -629,7 +621,7 @@ class TPCNetAllPhases(BaseModel):
             # if lastLR != scheduler.get_last_lr():
             #     print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, MSE Train Loss: {mse_trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, MSE Train Loss: {mse_trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             # Lmao this saves every epoch instead of every run at the moment. Oops.
@@ -641,8 +633,8 @@ class TPCNetAllPhases(BaseModel):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class BayesHIModel(BaseModel):
-    def __init__(self, cnnBlocks: int = 1, kernelNumber: int = 8, kernelWidth1: int = 31, kernelWidth2: int = 3, kernelMult: float = 2.0, pooling: str = 'off', MHANumber: int = 4, transformerNumber: int = 1, priorMu: float = 0.0, priorSigma: float = 0.01, posEncType: str = 'sinusoidal'):
-        super().__init__()
+    def __init__(self, cnn_blocks: int = 1, kernel_number: int = 8, kernel_width1: int = 31, kernel_width2: int = 3, kernel_mult: float = 2.0, pooling: str = 'off', mha_number: int = 4, transformer_number: int = 1, prior_mu: float = 0.0, prior_sigma: float = 0.01, pos_enc_type: str = 'sinusoidal', **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = root_dir / 'weights/bayeshi.pth'
         
         self.pooling = pooling
@@ -653,26 +645,34 @@ class BayesHIModel(BaseModel):
         # self.pool_layers = nn.ModuleList()
         in_channels = 1
         Hout, Wout = 1, 256  # Initial input size
-        for i in range(cnnBlocks):
+        for i in range(cnn_blocks):
             # Check if the width of the kernel is larger than the input size
             #TODO: this doesn't catch the negative dimension tensor error
-            if Wout < kernelWidth1 or self.get_output_size(Hout, Wout, k=[1, kernelWidth1], s=[1, 1], p=[0, 0], d=[1, 1])[1] < kernelWidth2:
+            if Wout < kernel_width1 or self.get_output_size(Hout, Wout, k=[1, kernel_width1], s=[1, 1], p=[0, 0], d=[1, 1])[1] < kernel_width2:
                 print('Dimensions too small for kernel size in kernel block', i, '. Ignoring block and continuing...')
-                cnnBlocks = i
+                cnn_blocks = i
                 break
             
+            # if i == 0:
+            #     out_channels = kernel_number
+            # else:
+            #     out_channels = int(in_channels * kernel_mult)
+            
+            
             if i == 0:
-                out_channels = kernelNumber
+                out_channels = int(convBlocks * kernel_number)
             else:
-                out_channels = int(in_channels * kernelMult)
-            print(f'Convolutional block {i + 1}: in_channels={in_channels}, out_channels={out_channels}, kernelWidth1={kernelWidth1}, kernelWidth2={kernelWidth2}, pooling={pooling}')
+                out_channels = int(in_channels - kernel_number)
+            out_channels2 = int(out_channels - kernel_number)
+            
+            print(f'Convolutional block {i + 1}: in_channels={in_channels}, out_channels={out_channels2}, kernel_width1={kernel_width1}, kernel_width2={kernel_width2}, pooling={pooling}')
             self.conv_layers.append(
             bnn.BayesConv2d(
-                prior_mu=priorMu,
-                prior_sigma=priorSigma,
+                prior_mu=prior_mu,
+                prior_sigma=prior_sigma,
                 in_channels=in_channels,
                 out_channels=out_channels,
-                kernel_size=(1, kernelWidth1),
+                kernel_size=(1, kernel_width1),
                 padding=(0, 0)
             )
             )
@@ -682,11 +682,11 @@ class BayesHIModel(BaseModel):
                 self.conv_layers.append(nn.AvgPool2d(kernel_size=(1, 2), stride=(1, 2)))
             self.conv_layers.append(
             bnn.BayesConv2d(
-                prior_mu=priorMu,
-                prior_sigma=priorSigma,
+                prior_mu=prior_mu,
+                prior_sigma=prior_sigma,
                 in_channels=out_channels,
-                out_channels=out_channels,
-                kernel_size=(1, kernelWidth2),
+                out_channels=out_channels2,
+                kernel_size=(1, kernel_width2),
                 padding=(0, 0)
             )
             )
@@ -695,26 +695,28 @@ class BayesHIModel(BaseModel):
             elif self.pooling == 'avg':
                 self.conv_layers.append(nn.AvgPool2d(kernel_size=(1, 2), stride=(1, 2)))
             
-            in_channels = out_channels
-            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernelWidth1], s=[1, 1], p=[0, 0], d=[1, 1])
+            in_channels = out_channels2
+            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernel_width1], s=[1, 1], p=[0, 0], d=[1, 1])
             if self.pooling != 'off':
                 Wout = Wout // 2
-            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernelWidth2], s=[1, 1], p=[0, 0], d=[1, 1])
+            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, kernel_width2], s=[1, 1], p=[0, 0], d=[1, 1])
             if self.pooling != 'off':
                 Wout = Wout // 2
+            if out_channels == 1:
+                break
             
-        if posEncType == 'sinusoidal':
+        if pos_enc_type == 'sinusoidal':
             self.positional_encoding = PositionalEncoding(d_model = out_channels)
-        elif posEncType == 'stochastic':
+        elif pos_enc_type == 'stochastic':
             self.positional_encoding = StochasticPositionalEncoding(d_model = out_channels)
         else:
             self.positional_encoding = None
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model = out_channels, nhead=MHANumber, batch_first=True),
-            num_layers=transformerNumber
+            nn.TransformerEncoderLayer(d_model = out_channels, nhead=mha_number, batch_first=True),
+            num_layers=transformer_number
         )
         self.flatten = nn.Flatten()
-        self.decoder = bnn.BayesLinear(prior_mu=priorMu, prior_sigma=priorSigma,
+        self.decoder = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma,
                                         in_features=out_channels * Wout, out_features=4)
         
         # Initialise weights using Kaiming normal initialization
@@ -729,6 +731,7 @@ class BayesHIModel(BaseModel):
         if self.decoder.bias_mu is not None:
             nn.init.zeros_(self.decoder.bias_mu)
         
+        self.to(self.device)
 
     def forward(self, x):
         for layer in self.conv_layers:
@@ -765,18 +768,18 @@ class BayesHIModel(BaseModel):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
 
-    def lossFunction(self, outputs, targets, KLweight):
+    def lossFunction(self, outputs, targets, kl_weight):
         MSE = nn.MSELoss()
         BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
-        return MSE(outputs, targets) + KLweight * BKLoss(self)
+        return MSE(outputs, targets) + kl_weight * BKLoss(self)
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs = 100, learningRate = 0.001, schedulerStep = 15, stopperPatience = 20, stopperTol = 0.0001, maxKLweight = 0.01, maxKLepoch = 100, early_stop = False):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs = 100, learning_rate = 0.001, scheduler_step = 15, stopper_patience = 20, stopper_tol = 0.0001, max_kl_weight = 0.01, max_kl_epoch = 100, early_stop = False):
         # Track a single set of weights through the training process
         criterion = self.lossFunction
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
         if early_stop:
-            earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+            earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -795,9 +798,9 @@ class BayesHIModel(BaseModel):
 
         for p in self.parameters():
             p.requires_grad = True  # Ensure all parameters are trainable
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
-            KLweight = maxKLweight * min(1, epoch / maxKLepoch)
+            kl_weight = max_kl_weight * min(1, epoch / max_kl_epoch)
             startTime = time.time()
             runningLoss = 0.0
             loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
@@ -806,7 +809,7 @@ class BayesHIModel(BaseModel):
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
-                loss = criterion(outputs, targets, KLweight)
+                loss = criterion(outputs, targets, kl_weight)
                 loss.backward()
                 optimizer.step()
                 runningLoss += loss.item()
@@ -826,7 +829,7 @@ class BayesHIModel(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             # Lmao this saves every epoch instead of every run at the moment. Oops.
@@ -838,8 +841,8 @@ class BayesHIModel(BaseModel):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class RNNModel(BaseModel):
-    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4, output_dim=4):
-        super().__init__()
+    def __init__(self, input_dim=1, seq_len=256, d_model=128, nhead=4, num_layers=4, output_dim=4, **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = None
 
         # Embed scalar inputs to d_model dimension
@@ -887,12 +890,12 @@ class RNNModel(BaseModel):
         """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
         return x.unsqueeze(1).to(self.device)
     
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -905,7 +908,7 @@ class RNNModel(BaseModel):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -934,7 +937,7 @@ class RNNModel(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -945,8 +948,8 @@ class RNNModel(BaseModel):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class LSTMSequencePredictor(BaseModel):
-    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=4, aggregation='mean'):
-        super().__init__()
+    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=4, aggregation='mean', **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = None
 
         self.aggregation = aggregation
@@ -987,12 +990,12 @@ class LSTMSequencePredictor(BaseModel):
         """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
         return x.unsqueeze(1).to(self.device)
     
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1005,7 +1008,7 @@ class LSTMSequencePredictor(BaseModel):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -1034,7 +1037,7 @@ class LSTMSequencePredictor(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1184,19 +1187,19 @@ class SAMLoss(nn.Module):
         else:  # 'none'
             return angles
 
-class LSTMSequenceToSequence(nn.Module):
-    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=1, device='cpu'):
-        super().__init__()
-        self.default_weights_path = None
-
+class LSTMSequenceToSequence(BaseModel):
+    def __init__(self, input_dim=1, hidden_dim=128, num_layers=2, output_dim=1, **kwargs):
+        super().__init__(**kwargs)
+        self.default_weights_path = root_dir / 'weights/lstm_seq2seq.pth'
+        
         self.embedding = nn.Linear(input_dim, hidden_dim)
         self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim,
                             num_layers=num_layers, batch_first=True)
         self.head = nn.Linear(hidden_dim, output_dim)
 
-        self.to(self.device)
-        
         # self.refiner = SpectralRefiner().to(self.device)
+        
+        self.to(self.device)
 
     def forward(self, x):
         """
@@ -1225,13 +1228,13 @@ class LSTMSequenceToSequence(nn.Module):
         """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
         return x.unsqueeze(1).to(self.device)
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         criterion = nn.MSELoss()
         # criterion = SAMLoss(reduction='mean')
         # mse = nn.MSELoss()
-        optimizer = optim.AdamW(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1244,7 +1247,7 @@ class LSTMSequenceToSequence(nn.Module):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -1273,7 +1276,7 @@ class LSTMSequenceToSequence(nn.Module):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1283,55 +1286,54 @@ class LSTMSequenceToSequence(nn.Module):
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
     
-    def evaluate(self, loader, criterion=nn.MSELoss()):
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
+    # def evaluate(self, loader, criterion=nn.MSELoss()):
+    #     self.eval()
+    #     totalLoss = 0.0
+    #     with torch.no_grad():
+    #         for inputs, targets in loader:
+    #             inputs = inputs.unsqueeze(1).to(self.device)
+    #             targets = targets.to(self.device)
+    #             outputs = self(inputs)
+    #             loss = criterion(outputs, targets)
+    #             totalLoss += loss.item()
+    #     avgLoss = totalLoss / len(loader)
+    #     return avgLoss
     
-    def predict(self, test_loader):
-        self.eval()
-        predictions = []
-        with torch.no_grad():
-            for inputs, *_ in test_loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                outputs = self(inputs)
-                predictions.append(outputs)
-        return torch.cat(predictions, dim=0)
+    # def predict(self, test_loader):
+    #     self.eval()
+    #     predictions = []
+    #     with torch.no_grad():
+    #         for inputs, *_ in test_loader:
+    #             inputs = inputs.unsqueeze(1).to(self.device)
+    #             outputs = self(inputs)
+    #             predictions.append(outputs)
+    #     return torch.cat(predictions, dim=0)
 
-    def load_weights(self, path):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
+    # def load_weights(self, path):
+    #     print(f'Loading model from {path}')
+    #     if self.device == 'cpu':
+    #         self.load_state_dict(torch.load(path, map_location=self.device))
+    #     else:
+    #         self.load_state_dict(torch.load(path))
+    #         self.to(self.device)
+    #     print('Model loaded successfully')
 
 @variational_estimator
-class BLSTMSequenceToSequence(nn.Module):
-    def __init__(self, input_dim=1, hidden_dim=128, priorSigma=0.1, num_layers=2, output_dim=1, device='cpu'):
-        super().__init__()
-        self.device = torch.device(device)
+class BLSTMSequenceToSequence(BaseModel):
+    def __init__(self, input_dim=1, hidden_dim=128, prior_sigma=0.1, num_layers=2, output_dim=1, **kwargs):
+        super().__init__(**kwargs)
 
         # self.embedding = nn.Linear(input_dim, hidden_dim)
-        self.embedding = bnn.BayesLinear(prior_mu=0., prior_sigma=priorSigma, in_features=input_dim, out_features=hidden_dim)
+        self.embedding = bnn.BayesLinear(prior_mu=0., prior_sigma=prior_sigma, in_features=input_dim, out_features=hidden_dim)
         # self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim,
                             # num_layers=num_layers, batch_first=True)
         self.lstm = BayesianLSTM(in_features = hidden_dim, out_features = hidden_dim)
         # self.head = nn.Linear(hidden_dim, output_dim)
-        self.head = bnn.BayesLinear(prior_mu=0., prior_sigma=priorSigma, in_features=hidden_dim, out_features=output_dim)
+        self.head = bnn.BayesLinear(prior_mu=0., prior_sigma=prior_sigma, in_features=hidden_dim, out_features=output_dim)
+
+        # self.refiner = SpectralRefiner().to(self.device)
 
         self.to(self.device)
-        
-        # self.refiner = SpectralRefiner().to(self.device)
 
     def forward(self, x):
         """
@@ -1356,14 +1358,14 @@ class BLSTMSequenceToSequence(nn.Module):
 
         return x  # (B, 256) or (B, 256, output_dim)
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
         # criterion = SAMLoss(reduction='mean')
         # mse = nn.MSELoss()
-        optimizer = optim.AdamW(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = earlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = earlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1376,16 +1378,16 @@ class BLSTMSequenceToSequence(nn.Module):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
-            for inputs, targets in tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch'):
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
                 inputs = inputs.unsqueeze(1).to(self.device)
                 targets = targets.to(self.device)
                 optimizer.zero_grad()
                 outputs = self(inputs)
-                # loss = criterion(outputs, targets)# + 1.0 * mse(outputs, targets)  # Add MSE for learning the magnitudes
                 loss = self.sample_elbo(inputs, targets, criterion=criterion, sample_nbr=3)
                 loss.backward()
                 optimizer.step()
@@ -1405,7 +1407,7 @@ class BLSTMSequenceToSequence(nn.Module):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1415,40 +1417,9 @@ class BLSTMSequenceToSequence(nn.Module):
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
     
-    def evaluate(self, loader, criterion=nn.MSELoss()):
-        self.eval()
-        totalLoss = 0.0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = inputs.unsqueeze(1).to(self.device)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-        avgLoss = totalLoss / len(loader)
-        return avgLoss
-    
-    def predict(self, test_loader, numPredictions):
-        self.eval()
-        allPredictions = []
-        for _ in tqdm(range(numPredictions), desc='Predicting', file=sys.stdout):
-            predictions = []
-            with torch.no_grad():
-                for inputs, *_ in test_loader:
-                    inputs = inputs.unsqueeze(1).unsqueeze(1).to(self.device)
-                    outputs = self(inputs)
-                    predictions.append(outputs)
-            allPredictions.append(torch.cat(predictions, dim=0))
-        return torch.stack(allPredictions, dim=0)
-
-    def load_weights(self, path):
-        print(f'Loading model from {path}')
-        if self.device == 'cpu':
-            self.load_state_dict(torch.load(path, map_location=self.device))
-        else:
-            self.load_state_dict(torch.load(path))
-            self.to(self.device)
-        print('Model loaded successfully')
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
+        return x.unsqueeze(1).to(self.device)
 
 
 class TransformerWithAttentionAggregation(nn.Module):
@@ -1494,12 +1465,12 @@ class TransformerWithAttentionAggregation(nn.Module):
         """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
         return x.unsqueeze(1).to(self.device)
 
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
-        # earlyStop = EarlyStopper(patience=stopperPatience, tol=stopperTol)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = EarlyStopper(patience=stopper_patience, tol=stopper_tol)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1512,7 +1483,7 @@ class TransformerWithAttentionAggregation(nn.Module):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -1541,7 +1512,7 @@ class TransformerWithAttentionAggregation(nn.Module):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
                 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
             
             if valLoss < bestValLoss:
@@ -1552,8 +1523,8 @@ class TransformerWithAttentionAggregation(nn.Module):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class SimpleCNN(BaseModel):
-    def __init__(self, cnn_blocks):
-        super().__init__()
+    def __init__(self, cnn_blocks, **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = None
 
         self.cnn_blocks = cnn_blocks
@@ -1620,6 +1591,8 @@ class SimpleCNN(BaseModel):
             elif isinstance(m, nn.Linear):
                 m.bias.data.zero_()
 
+        self.to(self.device)
+
     def forward(self, x):
         for layer in self.conv_layers:
             if isinstance(layer, nn.Conv2d):
@@ -1645,11 +1618,11 @@ class SimpleCNN(BaseModel):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
     
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         self.to(self.device)
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1662,7 +1635,7 @@ class SimpleCNN(BaseModel):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -1687,7 +1660,7 @@ class SimpleCNN(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             if valLoss < bestValLoss:
@@ -1698,8 +1671,8 @@ class SimpleCNN(BaseModel):
         return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class SimpleBNN(BaseModel):
-    def __init__(self, cnn_blocks, prior_mu, prior_sigma, kl_weight = 0.01):
-        super().__init__()
+    def __init__(self, cnn_blocks, prior_mu, prior_sigma, kl_weight = 0.01, **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = None
         
         self.cnn_blocks = cnn_blocks
@@ -1773,6 +1746,8 @@ class SimpleBNN(BaseModel):
         #         m.bias.data.zero_()
         #     elif isinstance(m, nn.Linear):
         #         m.bias.data.zero_()
+        
+        self.to(self.device)
 
     def forward(self, x):
         for layer in self.conv_layers:
@@ -1799,15 +1774,15 @@ class SimpleBNN(BaseModel):
         Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
         return Hout, Wout
     
-    def lossFunction(self, outputs, targets, KLweight):
+    def lossFunction(self, outputs, targets, kl_weight):
         MSE = nn.MSELoss()
         BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
-        return MSE(outputs, targets) + KLweight * BKLoss(self)
+        return MSE(outputs, targets) + kl_weight * BKLoss(self)
     
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
         criterion = self.lossFunction
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
         trainErrors = []
         valErrors = []
         epochTimes = []
@@ -1820,7 +1795,7 @@ class SimpleBNN(BaseModel):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -1845,7 +1820,7 @@ class SimpleBNN(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             if valLoss < bestValLoss:
@@ -1853,6 +1828,346 @@ class SimpleBNN(BaseModel):
                 if checkpoint_path is not None:
                     torch.save(self.state_dict(), checkpoint_path)
 
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+class ECAAttention(nn.Module):
+    def __init__(self, channels, kernel_size=3):
+        super(ECAAttention, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.conv = nn.Conv1d(1, 1, kernel_size=kernel_size, padding=(kernel_size - 1) // 2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        b, c, _ = x.size()
+        y = self.avg_pool(x).view(b, 1, c)
+        y = self.conv(y)
+        y = self.sigmoid(y)
+        return x * y.expand_as(x)
+
+class HISAClassifier(BaseModel):
+    def __init__(self, input_dim=1, num_layers=4, attention=False):
+        super().__init__()
+        self.default_weights_path = None
+        
+        self.input_dim = input_dim
+        self.num_layers = num_layers
+        
+        if self.num_layers != 4:
+            warnings.warn("HISAClassifier is currently designed for 4 layers. Using 4 layers regardless of num_layers parameter.")
+        
+        self.conv1 = nn.Conv1d(input_dim, 16, kernel_size=11, stride=1, padding=5)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=9, stride=1, padding=4)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=7, stride=1, padding=3)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=1, padding=2)
+        
+        if attention:
+            self.attention = ECAAttention(128, kernel_size=3)
+        else:
+            self.attention = None
+            
+        self.fc = nn.Linear(128 * (input_dim // 16), 128)
+        self.classifier = nn.Linear(128, 2)
+        
+    def forward(self, x):
+        x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
+        x = self.relu(self.conv3(x))
+        x = self.relu(self.conv4(x))
+        
+        if self.attention is not None:
+            x = self.attention(x)
+        
+        x = x.view(x.size(0), -1)
+        x = self.relu(self.fc(x))
+        x = self.classifier(x)
+        return x
+    
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add channel dimension. """
+        return x.unsqueeze(1).to(self.device) # Add channel dimension: (B, 1, L)
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+        self.to(self.device)
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+
+        for epoch in range(n_epochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+                probabilities = torch.softmax(outputs, dim=1)
+                confidence, predictions = torch.max(probabilities, dim=1)
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader, criterion)
+            valErrors.append(valLoss)
+    
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+
+
+class BayesLSTM(nn.Module):
+    def __init__(self, prior_mu, prior_sigma, input_size, hidden_size, num_layers=1, bias=True, batch_first=False):
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.bias = bias
+        self.batch_first = batch_first
+
+        self.prior_mu = prior_mu
+        self.prior_sigma = prior_sigma
+        self.prior_log_sigma = math.log(prior_sigma)
+
+        # Register weight and bias parameters (mean and log_sigma) for all layers
+        self.weight_ih_mu = nn.ParameterList()
+        self.weight_ih_log_sigma = nn.ParameterList()
+        self.weight_hh_mu = nn.ParameterList()
+        self.weight_hh_log_sigma = nn.ParameterList()
+        if bias:
+            self.bias_ih_mu = nn.ParameterList()
+            self.bias_ih_log_sigma = nn.ParameterList()
+            self.bias_hh_mu = nn.ParameterList()
+            self.bias_hh_log_sigma = nn.ParameterList()
+        else:
+            self.register_parameter('bias_ih_mu', None)
+            self.register_parameter('bias_ih_log_sigma', None)
+            self.register_parameter('bias_hh_mu', None)
+            self.register_parameter('bias_hh_log_sigma', None)
+
+        for layer in range(num_layers):
+            in_dim = input_size if layer == 0 else hidden_size
+            # Input-hidden weights
+            self.weight_ih_mu.append(nn.Parameter(torch.Tensor(4 * hidden_size, in_dim)))
+            self.weight_ih_log_sigma.append(nn.Parameter(torch.Tensor(4 * hidden_size, in_dim)))
+            # Hidden-hidden weights
+            self.weight_hh_mu.append(nn.Parameter(torch.Tensor(4 * hidden_size, hidden_size)))
+            self.weight_hh_log_sigma.append(nn.Parameter(torch.Tensor(4 * hidden_size, hidden_size)))
+            if bias:
+                self.bias_ih_mu.append(nn.Parameter(torch.Tensor(4 * hidden_size)))
+                self.bias_ih_log_sigma.append(nn.Parameter(torch.Tensor(4 * hidden_size)))
+                self.bias_hh_mu.append(nn.Parameter(torch.Tensor(4 * hidden_size)))
+                self.bias_hh_log_sigma.append(nn.Parameter(torch.Tensor(4 * hidden_size)))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        stdv = 1.0 / math.sqrt(self.hidden_size)
+        for l in range(self.num_layers):
+            self.weight_ih_mu[l].data.uniform_(-stdv, stdv)
+            self.weight_ih_log_sigma[l].data.fill_(self.prior_log_sigma)
+            self.weight_hh_mu[l].data.uniform_(-stdv, stdv)
+            self.weight_hh_log_sigma[l].data.fill_(self.prior_log_sigma)
+            if self.bias:
+                self.bias_ih_mu[l].data.uniform_(-stdv, stdv)
+                self.bias_ih_log_sigma[l].data.fill_(self.prior_log_sigma)
+                self.bias_hh_mu[l].data.uniform_(-stdv, stdv)
+                self.bias_hh_log_sigma[l].data.fill_(self.prior_log_sigma)
+
+    def sample_params(self, mu, log_sigma):
+        # Reparameterization trick: w = mu + sigma * epsilon, epsilon ~ N(0,1)
+        epsilon = torch.randn_like(log_sigma)
+        return mu + torch.exp(log_sigma) * epsilon
+
+    def forward(self, input, hx=None):
+        if self.batch_first:
+            input = input.transpose(0, 1)  # (seq_len, batch, input_size)
+        seq_len, batch_size, _ = input.size()
+
+        if hx is None:
+            h_0 = input.new_zeros(self.num_layers, batch_size, self.hidden_size, requires_grad=False)
+            c_0 = input.new_zeros(self.num_layers, batch_size, self.hidden_size, requires_grad=False)
+        else:
+            h_0, c_0 = hx
+
+        h_n = []
+        c_n = []
+
+        layer_input = input
+        for layer in range(self.num_layers):
+            h_t = h_0[layer]
+            c_t = c_0[layer]
+            outputs = []
+
+            # Sample weights and biases for this layer
+            w_ih = self.sample_params(self.weight_ih_mu[layer], self.weight_ih_log_sigma[layer])
+            w_hh = self.sample_params(self.weight_hh_mu[layer], self.weight_hh_log_sigma[layer])
+            if self.bias:
+                b_ih = self.sample_params(self.bias_ih_mu[layer], self.bias_ih_log_sigma[layer])
+                b_hh = self.sample_params(self.bias_hh_mu[layer], self.bias_hh_log_sigma[layer])
+            else:
+                b_ih = b_hh = 0
+
+            for t in range(seq_len):
+                x_t = layer_input[t]
+                gates = (F.linear(x_t, w_ih, b_ih) +
+                         F.linear(h_t, w_hh, b_hh))
+                i, f, g, o = gates.chunk(4, 1)
+                i = torch.sigmoid(i)
+                f = torch.sigmoid(f)
+                g = torch.tanh(g)
+                o = torch.sigmoid(o)
+                c_t = f * c_t + i * g
+                h_t = o * torch.tanh(c_t)
+                outputs.append(h_t)
+            outputs = torch.stack(outputs, 0)
+            layer_input = outputs
+            h_n.append(h_t)
+            c_n.append(c_t)
+
+        output = layer_input
+        h_n = torch.stack(h_n, 0)
+        c_n = torch.stack(c_n, 0)
+
+        if self.batch_first:
+            output = output.transpose(0, 1)  # (batch, seq_len, hidden_size)
+        return output, (h_n, c_n)
+
+class MyBayesLSTM(BaseModel):
+    def __init__(self, input_dim=1, hidden_dim=128, prior_mu=0.0, prior_sigma=0.1, num_layers=2, output_dim=1, kl_weight=0.01, clamp=None, **kwargs):
+        super().__init__(**kwargs)
+        self.default_weights_path = root_dir / 'weights' / 'my_blstm.pth'
+        
+        self.clamp = clamp
+        self.kl_weight = kl_weight
+
+        self.embedding = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma, in_features=input_dim, out_features=hidden_dim)
+        self.lstm = BayesLSTM(prior_mu=prior_mu, prior_sigma=prior_sigma, input_size=hidden_dim, hidden_size=hidden_dim, num_layers=num_layers)
+        self.head = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma, in_features=hidden_dim, out_features=output_dim)
+
+        # self.refiner = SpectralRefiner().to(self.device)
+
+        self.to(self.device)
+        
+    def lossFunction(self, outputs, targets):
+        MSE = nn.MSELoss()
+        BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
+        return MSE(outputs, targets) + self.kl_weight * BKLoss(self)
+
+    def forward(self, x):
+        """
+        x: Tensor of shape (B, 1, 256)
+        Returns:
+            output: (B, 256) or (B, 256, output_dim) depending on output_dim
+        """
+        x = x.to(self.device)
+        B, H, L = x.shape
+        assert H == 1, f"Expected input shape (B, 1, L), got {x.shape}"
+
+        x = x.view(B, L).unsqueeze(-1)       # (B, L, 1)
+        x = self.embedding(x)                # (B, L, hidden_dim)
+        x, _ = self.lstm(x)                  # (B, L, hidden_dim)
+        x = self.head(x)                     # (B, L, output_dim)
+
+        if x.shape[-1] == 1:
+            x = x.squeeze(-1)                # (B, L)
+            
+        # Apply the spectral refiner network
+        # x = self.refiner(x)
+        
+        # Make sure the elements of the sequence are between 0 and 1
+        # Only clamp if requested, and only for inference/post-processing, not during training
+        if not self.training:
+            if self.clamp is True:
+                x = torch.clamp(x, 0, 1)
+            elif isinstance(self.clamp, (tuple, list)) and len(self.clamp) == 2:
+                x = torch.clamp(x, self.clamp[0], self.clamp[1])
+            elif self.clamp is not None:
+                raise ValueError("clamp must be True, None, or a tuple/list of two values (min, max)")
+
+        return x
+    
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
+        return x.unsqueeze(1).to(self.device)
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
+        self.to(self.device)
+        criterion = self.lossFunction
+        optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = earlyStopper(patience=stopper_patience, tol=stopper_tol)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+        
+        for epoch in range(n_epochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = inputs.unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader)
+            valErrors.append(valLoss)
+            
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+                
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+            
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+                    
         return trainErrors, valErrors, trainedEpochs, epochTimes
     
 class ECAAttention(nn.Module):
@@ -2004,3 +2319,164 @@ class HISAClassifier(BaseModel):
                 all_probabilities.append(probabilities)
         
         return torch.cat(all_predictions, dim=0), torch.cat(all_probabilities, dim=0)
+
+class VAE(BaseModel):
+    def __init__(self, input_dim=256, hidden_dim=128, latent_dim=32, **kwargs):
+        super().__init__(**kwargs)
+        self.default_weights_path = None
+        
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.latent_dim = latent_dim
+        
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+        
+        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, latent_dim)
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, input_dim),
+        )
+        
+    def encode(self, x):
+        """
+        Encodes the input x into a latent representation.
+        Returns the mean and log variance of the latent distribution.
+        """
+        h = self.encoder(x)
+        mu = self.fc_mu(h)
+        logvar = self.fc_logvar(h)
+        return mu, logvar
+    
+    def reparameterize(self, mu, logvar):
+        """
+        Reparameterization trick to sample from the latent distribution.
+        Returns a sample from the latent space.
+        """
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+    
+    def decode(self, z):
+        """
+        Decodes the latent representation z back to the original input space.
+        """
+        return self.decoder(z)
+    
+    def forward(self, x):
+        """
+        Forward pass through the VAE.
+        Returns the reconstructed output and the latent representation.
+        """
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        recon_x = self.decode(z)
+        return recon_x, mu, logvar
+
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs moving them to the correct device. Dimension handling isn't required for this model. """
+        return x.to(self.device)
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
+        self.to(self.device)
+        optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        criterion = nn.MSELoss()
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+        
+        for epoch in range(n_epochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                recon_x, mu, logvar = self(inputs)
+                loss = criterion(recon_x, targets) + 0.5 * torch.mean(torch.exp(logvar) + mu**2 - 1. - logvar)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader, criterion)
+            valErrors.append(valLoss)
+            
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+                
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+            
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+                    
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+
+    # Add some function/s that lets me visualise the latent space
+    def visualize_latent_space(self, dataloader, num_samples=1000, color_by=None):
+        """
+        Visualizes the latent space of the VAE by sampling points and plotting them.
+        If color_by is not None, it should be a function that takes the targets and returns a value for coloring.
+        For regression, you can pass a lambda to color_by to select a target dimension, e.g. color_by=lambda y: y[:, 0]
+        """
+        self.eval()
+        all_latents = []
+        all_colors = []
+
+        with torch.no_grad():
+            for inputs, targets in dataloader:
+                inputs = self.preprocess_inputs(inputs)
+                mu, _ = self.encode(inputs)
+                all_latents.append(mu.cpu().numpy())
+                if color_by is not None:
+                    color_vals = color_by(targets.cpu().numpy())
+                    all_colors.append(color_vals)
+                if len(all_latents) * inputs.size(0) >= num_samples:
+                    break
+
+        all_latents = np.concatenate(all_latents)[:num_samples]
+        if color_by is not None and all_colors:
+            all_colors = np.concatenate(all_colors)[:num_samples]
+        else:
+            all_colors = None
+
+        plt.figure(figsize=(10, 8))
+        if all_latents.shape[1] >= 2:
+            if all_colors is not None:
+                plt.scatter(all_latents[:, 0], all_latents[:, 1], c=all_colors, cmap='viridis', s=5)
+                plt.colorbar()
+            else:
+                plt.scatter(all_latents[:, 0], all_latents[:, 1], s=5)
+            plt.xlabel('Latent Dimension 1')
+            plt.ylabel('Latent Dimension 2')
+        else:
+            plt.scatter(all_latents[:, 0], np.zeros_like(all_latents[:, 0]), c=all_colors if all_colors is not None else 'b', s=5)
+            plt.xlabel('Latent Dimension 1')
+        plt.title('Latent Space Visualization')
+        plt.show()

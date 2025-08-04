@@ -15,7 +15,12 @@ Functions:
 """
 
 import copy
-from .models import SauryModel, BayesHIModel, TPCNetAllPhases, RNNModel, LSTMSequencePredictor, TransformerWithAttentionAggregation, SimpleCNN, SimpleBNN, LSTMSequenceToSequence, BLSTMSequenceToSequence
+from .models import (
+    SauryModel, BayesHIModel, TPCNetAllPhases, RNNModel, LSTMSequencePredictor, 
+    TransformerWithAttentionAggregation, SimpleCNN, SimpleBNN, LSTMSequenceToSequence, 
+    BLSTMSequenceToSequence, MyBayesLSTM, VAE
+)
+from torch.cuda import is_available
 
 MODEL_CONFIGS = {
     'saury': {
@@ -90,6 +95,14 @@ MODEL_CONFIGS = {
     'BLSTMSequenceToSequence': {
         'class': BLSTMSequenceToSequence,
         'params': {}
+    },
+    'MyBayesLSTM': {
+        'class': MyBayesLSTM,
+        'params': {}
+    },
+    'VAE': {
+        'class': VAE,
+        'params': {}
     }
 }
 
@@ -117,7 +130,6 @@ def load_model(model_name, **kwargs):
     params = copy.deepcopy(config['params'])
     params.update(kwargs)
 
-    # model = model_class(**params, device='cuda' if torch.cuda.is_available() else 'cpu')
     model = model_class(**params)
 
     return model

@@ -12,9 +12,7 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 import warnings
-
-# Import your load_data function
-from bayeshi.data_loaders import load_data  # Update path as needed
+from bayeshi.data_loaders import load_data
 
 class TestDataLoader(unittest.TestCase):
     def setUp(self):
@@ -34,14 +32,14 @@ class TestDataLoader(unittest.TestCase):
         self.seta_data = np.random.rand(60, 256)
         self.seta_labels = np.random.rand(60, 4)
 
-    def mock_load_tigress_data(self, path, sim, x_values, y_values):
+    def mock_load_tigress_data(self, path, sim, x_values, y_values, verbose=False):
         # Return mock data with cube IDs encoded in the first column
         return self.tigress_data, self.tigress_labels
 
-    def mock_load_saury_data(self, path, x_values, y_values):
+    def mock_load_saury_data(self, path, x_values, y_values, verbose=False):
         return self.saury_data, self.saury_labels
 
-    def mock_load_seta_data(self, path, sim, x_values, y_values):
+    def mock_load_seta_data(self, path, sim, x_values, y_values, verbose=False):
         return self.seta_data, self.seta_labels
 
     def mock_data_for_y_values(self, samples, y_values, n_features=256):
@@ -221,11 +219,11 @@ class TestDataLoader(unittest.TestCase):
         # Use fixed mock data for this test
         fixed_data = np.arange(100*256, dtype=float).reshape(100, 256)
         fixed_labels = np.arange(100*4, dtype=float).reshape(100, 4)
-        def fixed_mock_load_tigress_data(path, sim, x_values, y_values):
+        def fixed_mock_load_tigress_data(path, sim, x_values, y_values, verbose=False):
             return fixed_data, fixed_labels
-        def fixed_mock_load_saury_data(path, x_values, y_values):
+        def fixed_mock_load_saury_data(path, x_values, y_values, verbose=False):
             return fixed_data[:80], fixed_labels[:80]
-        def fixed_mock_load_seta_data(path, sim, x_values, y_values):
+        def fixed_mock_load_seta_data(path, sim, x_values, y_values, verbose=False):
             return fixed_data[:60], fixed_labels[:60]
 
         with patch('bayeshi.data_loaders.load_tigress_data', fixed_mock_load_tigress_data), \
@@ -242,15 +240,15 @@ class TestDataLoader(unittest.TestCase):
 
     def test_y_values_fractions(self):
         """Test that y_data shape is (n, 4) when y_values is 'fractions'."""
-        def mock_load_tigress_data(path, sim, x_values, y_values):
+        def mock_load_tigress_data(path, sim, x_values, y_values, verbose=False):
             x = np.random.rand(100, 256)
             y = self.mock_data_for_y_values(100, y_values)
             return x, y
-        def mock_load_saury_data(path, x_values, y_values):
+        def mock_load_saury_data(path, x_values, y_values, verbose=False):
             x = np.random.rand(80, 256)
             y = self.mock_data_for_y_values(80, y_values)
             return x, y
-        def mock_load_seta_data(path, sim, x_values, y_values):
+        def mock_load_seta_data(path, sim, x_values, y_values, verbose=False):
             x = np.random.rand(60, 256)
             y = self.mock_data_for_y_values(60, y_values)
             return x, y
@@ -269,15 +267,15 @@ class TestDataLoader(unittest.TestCase):
     def test_y_values_emission_absorption(self):
         """Test that y_data shape matches x_data when y_values is 'emission' or 'absorption'."""
         for y_val in ['emission', 'absorption']:
-            def mock_load_tigress_data(path, sim, x_values, y_values):
+            def mock_load_tigress_data(path, sim, x_values, y_values, verbose=False):
                 x = np.random.rand(100, 256)
                 y = self.mock_data_for_y_values(100, y_val, 256)
                 return x, y
-            def mock_load_saury_data(path, x_values, y_values):
+            def mock_load_saury_data(path, x_values, y_values, verbose=False):
                 x = np.random.rand(80, 256)
                 y = self.mock_data_for_y_values(80, y_val, 256)
                 return x, y
-            def mock_load_seta_data(path, sim, x_values, y_values):
+            def mock_load_seta_data(path, sim, x_values, y_values, verbose=False):
                 x = np.random.rand(60, 256)
                 y = self.mock_data_for_y_values(60, y_val, 256)
                 return x, y
@@ -292,6 +290,41 @@ class TestDataLoader(unittest.TestCase):
                 self.assertEqual(train_loader.dataset.tensors[1].shape[1], 256)
                 self.assertEqual(val_loader.dataset.tensors[1].shape[1], 256)
                 self.assertEqual(test_loader.dataset.tensors[1].shape[1], 256)
+
+    def test_shapes(self):
+        """Test that the x and y data shapes are (n_samples, 4) and (n_samples, 256) for fractions or emission/absorption respectively."""
+        for x_val in ['emission', 'absorption']:
+            for y_val in ['fractions', 'emission', 'absorption']:
+                
+                n_spectra = 200
+                target_n_spectra = round((1 - 0.05 - 0.05) * n_spectra)
+                torch_loader, *_ = load_data(dataset='saury', x_values=x_val, y_values=y_val, split=n_spectra, test_size = 0.05, val_size = 0.05)
+                x_data, y_data = torch_loader.dataset.tensors
+                if y_val == 'fractions':
+                    self.assertEqual(x_data.shape, (target_n_spectra, 256))
+                    self.assertEqual(y_data.shape, (target_n_spectra, 4))
+                elif y_val in ['emission', 'absorption']:
+                    self.assertEqual(x_data.shape, (target_n_spectra, 256))
+                    self.assertEqual(y_data.shape, (target_n_spectra, 256))
+    
+    def test_train_val_test_split(self):
+        """Test that train, val, and test splits are correctly sized."""
+        for test_split in [0.05, 0.1, 0.5]:
+            for val_split in [0.05, 0.1, 0.5]:
+                if test_split + val_split >= 1.0:
+                    with self.assertRaises(ValueError):
+                        load_data(
+                            dataset='saury', split=200, test_size=test_split, val_size=val_split
+                        )
+                else:
+                    train_loader, val_loader, test_loader = load_data(
+                        dataset='saury', split=200, test_size=test_split, val_size=val_split
+                    )
+                    total_samples = len(train_loader.dataset) + len(val_loader.dataset) + len(test_loader.dataset)
+                    self.assertEqual(total_samples, 200)
+                    self.assertEqual(len(train_loader.dataset), round(200 - (200 * (test_split + val_split))))
+                    self.assertEqual(len(val_loader.dataset), round(200 * val_split))
+                    self.assertEqual(len(test_loader.dataset), round(200 * test_split))
 
 if __name__ == '__main__':
     unittest.main()

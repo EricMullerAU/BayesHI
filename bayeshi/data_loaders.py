@@ -66,41 +66,46 @@ from torch.utils.data import DataLoader, TensorDataset
 def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='fractions',
               dataset='all', tigress_sim='all', seta_sim='both', split=None,
               batch_size=32, num_workers=4, noise=0.5, test_size=0.2, val_size=0.2,
-              random_state=42, show_example=False):
+              e_minus_tau=False, random_state=42, show_example=False, verbose=False):
+    # If you need to save space in memory and are loading a subset of the data, I recommend not using all the TIGRESS cubes.
+    # Instead, select only a few of them as loading all 11 cubes just to subsample at the end is not efficient.
 
     # Validate x_values and y_values
     if x_values not in ['emission', 'absorption']:
         raise ValueError("x_values must be either 'emission' or 'absorption'")
     if y_values not in ['fractions', 'absorption', 'emission']:
         raise ValueError("y_values must be either 'fractions', 'absorption', or 'emission'")
+    
+    if e_minus_tau and x_values != 'absorption' and y_values != 'absorption':
+        raise ValueError("e_minus_tau should only be used with x_values='absorption' and/or y_values='absorption'")
 
-    # Initialize variables to store loaded data
+    # Create empty arrays to be overwritten as needed
     tigress_x, tigress_y = np.array([]), np.array([])
     saury_x, saury_y = np.array([]), np.array([])
     seta_x, seta_y = np.array([]), np.array([])
 
     # Load data based on dataset parameter
     if dataset == 'all':
-        tigress_x, tigress_y = load_tigress_data(data_path + 'TIGRESS/', tigress_sim, x_values, y_values)
-        saury_x, saury_y = load_saury_data(data_path + 'Saury/', x_values, y_values)
-        seta_x, seta_y = load_seta_data(data_path + 'Seta/', seta_sim, x_values, y_values)
+        tigress_x, tigress_y = load_tigress_data(data_path + 'TIGRESS/', tigress_sim, x_values, y_values, verbose=verbose)
+        saury_x, saury_y = load_saury_data(data_path + 'Saury/', x_values, y_values, verbose=verbose)
+        seta_x, seta_y = load_seta_data(data_path + 'Seta/', seta_sim, x_values, y_values, verbose=verbose)
     elif isinstance(dataset, list):
         for sim in dataset:
             if sim.startswith('tigress'):
-                tigress_x, tigress_y = load_tigress_data(data_path + 'TIGRESS/', tigress_sim, x_values, y_values)
+                tigress_x, tigress_y = load_tigress_data(data_path + 'TIGRESS/', tigress_sim, x_values, y_values, verbose=verbose)
             elif sim.startswith('saury'):
-                saury_x, saury_y = load_saury_data(data_path + 'Saury/', x_values, y_values)
+                saury_x, saury_y = load_saury_data(data_path + 'Saury/', x_values, y_values, verbose=verbose)
             elif sim.startswith('seta'):
-                seta_x, seta_y = load_seta_data(data_path + 'Seta/', seta_sim, x_values, y_values)
+                seta_x, seta_y = load_seta_data(data_path + 'Seta/', seta_sim, x_values, y_values, verbose=verbose)
             else:
                 raise ValueError(f"Unknown dataset type: {sim}")
     elif isinstance(dataset, str):
         if dataset.startswith('tigress'):
-            tigress_x, tigress_y = load_tigress_data(data_path + 'TIGRESS/', tigress_sim, x_values, y_values)
+            tigress_x, tigress_y = load_tigress_data(data_path + 'TIGRESS/', tigress_sim, x_values, y_values, verbose=verbose)
         elif dataset.startswith('saury'):
-            saury_x, saury_y = load_saury_data(data_path + 'Saury/', x_values, y_values)
+            saury_x, saury_y = load_saury_data(data_path + 'Saury/', x_values, y_values, verbose=verbose)
         elif dataset.startswith('seta'):
-            seta_x, seta_y = load_seta_data(data_path + 'Seta/', seta_sim, x_values, y_values)
+            seta_x, seta_y = load_seta_data(data_path + 'Seta/', seta_sim, x_values, y_values, verbose=verbose)
         else:
             raise ValueError(f"Unknown dataset type: {dataset}")
     else:
@@ -134,7 +139,7 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
         n_sims = len(active_sims)
         n_per_sim = n_total // n_sims
         remainder = n_total % n_sims
-        print(f"Splitting {n_total} samples across {n_sims} simulations: {n_per_sim} per simulation, with {remainder} extra samples distributed")
+        print(f"Drawing {n_total} samples across {n_sims} simulations: {n_per_sim} per simulation, with {remainder} extra samples distributed")
         rng = np.random.RandomState(random_state)
         for i, sim in enumerate(active_sims):
             x, y = sim_data[sim]
@@ -202,17 +207,34 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
     # Concatenate the data
     x_arrays = [v[0] for v in sim_data.values() if v is not None]
     y_arrays = [v[1] for v in sim_data.values() if v is not None]
-    x_data = np.concatenate(x_arrays, axis=0) if x_arrays else np.array([])
-    y_data = np.concatenate(y_arrays, axis=0) if y_arrays else np.array([])
+    # Pre-allocate arrays for speed if possible
+    total_samples = sum(arr.shape[0] for arr in x_arrays)
+    x_shape = x_arrays[0].shape[1:] if x_arrays else ()
+    y_shape = y_arrays[0].shape[1:] if y_arrays else ()
 
-    # Concatenate the data
-    x_arrays = [v[0] for v in sim_data.values() if v is not None]
-    y_arrays = [v[1] for v in sim_data.values() if v is not None]
-    x_data = np.concatenate(x_arrays, axis=0) if x_arrays else np.array([])
-    y_data = np.concatenate(y_arrays, axis=0) if y_arrays else np.array([])
+    x_data = np.empty((total_samples, *x_shape), dtype=x_arrays[0].dtype) if x_arrays else np.array([])
+    y_data = np.empty((total_samples, *y_shape), dtype=y_arrays[0].dtype) if y_arrays else np.array([])
+
+    idx = 0
+    for x_arr, y_arr in zip(x_arrays, y_arrays):
+        n = x_arr.shape[0]
+        x_data[idx:idx+n] = x_arr
+        y_data[idx:idx+n] = y_arr
+        idx += n
+        
+    if e_minus_tau and x_values == 'absorption':
+        if verbose:
+            print('Applying e^{-tau} transformation to the data')
+        x_data = np.exp(-x_data)
+    elif e_minus_tau and y_values == 'absorption':
+        if verbose:
+            print('Applying e^{-tau} transformation to the target data')
+        y_data = np.exp(-y_data)
     
-      
-    x_data += np.random.randn(*x_data.shape) * noise
+    if noise > 0:
+        if verbose:
+            print(f'Adding noise with amplitude of {noise}K to the data')
+        x_data += np.random.randn(*x_data.shape) * noise
     
     print('Total number of spectra:', x_data.shape[0])
 
@@ -228,13 +250,20 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
     # print(f'Removed {los_removed} lines of sight with NaNs')
     
     # Split the data into training, validation, and testing sets
-    train_pct = int((1 - test_size - val_size) * 100)
-    val_pct = int(val_size * 100)
-    test_pct = int(test_size * 100)
+    train_pct = round((1 - test_size - val_size) * 100)
+    val_pct = round(val_size * 100)
+    test_pct = round(test_size * 100)
+    
+    n_train_samples = round(x_data.shape[0] * (1 - test_size - val_size))
+    n_val_samples = round(x_data.shape[0] * val_size)
+    n_test_samples = round(x_data.shape[0] * test_size)
+    
+    if n_train_samples < 1 or n_val_samples < 1 or n_test_samples < 1:
+        raise ValueError("The defined splits result in one or more datasets with less than one sample.")
     
     print(f'Splitting data into {train_pct}% train, {val_pct}% validation, and {test_pct}% test sets.')
-    X_train, X_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=test_size + val_size, random_state=random_state)
-    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=test_size / (test_size + val_size), random_state=random_state)
+    X_train, X_temp, y_train, y_temp = train_test_split(x_data, y_data, test_size=n_val_samples+n_test_samples, random_state=random_state)
+    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=n_test_samples / (n_val_samples+n_test_samples), random_state=random_state)
     
     train_dataset = TensorDataset(Tensor(X_train), Tensor(y_train))
     val_dataset = TensorDataset(Tensor(X_val), Tensor(y_val))
@@ -246,24 +275,74 @@ def load_data(data_path='/scratch/mk27/em8117/', x_values='emission', y_values='
     
     if show_example:
         import matplotlib.pyplot as plt
-        random_indices = np.random.choice(spectra.shape[0], size=5, replace=False)
-        plt.figure(figsize=(10, 6))
-        for i in random_indices:
-            if x_values == 'emission':
-                plt.plot(spectra[i].T)
-            elif x_values == 'absorption':
-                plt.plot(np.exp(-spectra[i]).T)
-        plt.xlabel('Channel')
-        if x_values == 'emission':
-            plt.ylabel(r'$T_B$ [K]')
-        elif x_values == 'absorption':
-            plt.ylabel(r'$e^{-\tau}$')
-        plt.title('Example Spectra')
-        plt.show()
+        # Plot 5 random examples
+        random_indices = np.random.choice(x_data.shape[0], size=5, replace=False)
+        for idx in random_indices:
+            # If both x and y are spectra (1D arrays of same length)
+            if (
+            (x_values in ['emission', 'absorption'])
+            and (y_values in ['emission', 'absorption'])
+            and (x_data.shape[1] == y_data.shape[1])
+            ):
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+                vch = np.arange(x_data.shape[1])
+
+                # Plot x
+                if x_values == 'emission':
+                    ax1.plot(vch, x_data[idx], 'k-', label=r'$T_{b}$ (kh)')
+                    ax1.set_ylabel('$T_{b} [K]$', fontsize=20)
+                elif x_values == 'absorption':
+                    if e_minus_tau:
+                        ax1.plot(vch, x_data[idx], 'k-', label=r'$e^{-\tau}$')
+                        ax1.set_ylabel(r'$e^{-\tau}$', fontsize=20)
+                    else:
+                        ax1.plot(vch, x_data[idx], 'k-', label=r'$\tau$')
+                        ax1.set_ylabel(r'$\tau$', fontsize=20)
+                ax1.legend(loc='upper left', fontsize=12)
+                ax1.grid(True, linestyle='--', linewidth=0.5, color='lightgray', zorder=-10)
+                ax1.tick_params(axis='x', labelsize=14)
+                ax1.tick_params(axis='y', labelsize=14)
+
+                # Plot y
+                if y_values == 'emission':
+                    ax2.plot(vch, y_data[idx], 'k-', label='True')
+                    ax2.set_ylabel(r'$T_{b} [K]$', fontsize=20)
+                elif y_values == 'absorption':
+                    if e_minus_tau:
+                        ax2.plot(vch, y_data[idx], 'k-', label=r'$e^{-\tau}$')
+                        ax2.set_ylabel(r'$e^{-\tau}$', fontsize=20)
+                    else:
+                        ax2.plot(vch, y_data[idx], 'k-', label=r'$\tau$')
+                        ax2.set_ylabel(r'$\tau$', fontsize=20)
+                ax2.legend(loc='lower left', fontsize=12)
+                ax2.grid(True, linestyle='--', linewidth=0.5, color='lightgray', zorder=-10)
+                ax2.tick_params(axis='x', labelsize=14)
+                ax2.tick_params(axis='y', labelsize=14)
+                ax2.set_xlabel('Channel', fontsize=20)
+
+                plt.subplots_adjust(wspace=0.15, hspace=0.05)
+                plt.suptitle('Example Spectra (x and y)', fontsize=22)
+                plt.show()
+            else:
+                # Default: just plot x_data
+                plt.figure(figsize=(10, 6))
+                if x_values == 'emission':
+                    plt.plot(x_data[idx].T)
+                    plt.ylabel(r'$T_B$ [K]')
+                elif x_values == 'absorption':
+                    if e_minus_tau:
+                        plt.plot(np.exp(-x_data[idx]).T)
+                        plt.ylabel(r'$e^{-\tau}$')
+                    else:
+                        plt.plot(x_data[idx].T)
+                        plt.ylabel(r'$\tau$')
+                plt.xlabel('Channel')
+                plt.title('Example Spectra')
+                plt.show()
     
     return train_loader, val_loader, test_loader
 
-def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values='fractions'):
+def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values='fractions', verbose=False):
     if sim_number == 'all':
         sim_number = np.arange(290, 391, 10)
     elif type(sim_number) is list:
@@ -289,12 +368,17 @@ def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values
         y_data = np.empty((total_spectra, 4))
     else:
         y_data = np.empty((total_spectra, 256))
-            
+    
     for i, sim in enumerate(sim_number):
+        if verbose:
+            print(f'Loading TIGRESS simulation cube {sim} ({i+1}/{len(sim_number)}) with x_values={x_values} and y_values={y_values}')
         if x_values == 'emission':
             spectra = fits.getdata(data_path + f'{sim}_Tb_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
+            # Fix FITS big-endian order issue
+            spectra = spectra.astype(np.float32)
         elif x_values == 'absorption':
             spectra = fits.getdata(data_path + f'{sim}_Tau_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
+            spectra = spectra.astype(np.float32)
         else:
             raise ValueError("x_values must be either 'emission' or 'absorption'")
                 
@@ -313,6 +397,11 @@ def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values
             fwnm = fits.getdata(data_path + f'{sim}_fwnm_FINAL.fits')[3584//2-128:3584//2+128, :]
             rhi = fits.getdata(data_path + f'{sim}_rhi_FINAL.fits')[3584//2-128:3584//2+128, :]
             
+            fcnm = fcnm.astype(np.float32)
+            funm = funm.astype(np.float32)
+            fwnm = fwnm.astype(np.float32)
+            rhi = rhi.astype(np.float32)
+            
             # Stack from (z, x) to (z, x, 4)
             fractions = np.stack((fcnm, funm, fwnm, rhi), axis=2)
             # Change from (z, x, 4) to (x*z, 4)
@@ -321,12 +410,14 @@ def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values
             
         elif y_values == 'absorption':
             absorption = fits.getdata(data_path + f'{sim}_Tau_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
-            # Change from (v, z, x) to (x*z, 1)
+            absorption = absorption.astype(np.float32)
+            # Change from (v, z, x) to (x*z, v)
             absorption = np.moveaxis(absorption, 0, -1)
             y_data_temp = absorption.reshape(-1, absorption.shape[-1])
         elif y_values == 'emission':
             emission = fits.getdata(data_path + f'{sim}_Tb_FINAL.fits')[:, 3584//2-128:3584//2+128, :]
-            # Change from (v, z, x) to (x*z, 1)
+            emission = emission.astype(np.float32)
+            # Change from (v, z, x) to (x*z, v)
             emission = np.moveaxis(emission, 0, -1)
             y_data_temp = emission.reshape(-1, emission.shape[-1])
         else:
@@ -337,7 +428,7 @@ def load_tigress_data(data_path, sim_number='all', x_values='emission', y_values
             
     return x_data, y_data
 
-def load_saury_data(data_path, x_values='emission', y_values='fractions'):
+def load_saury_data(data_path, x_values='emission', y_values='fractions', verbose=False):
     if x_values not in ['emission', 'absorption']:
         raise ValueError("x_values must be either 'emission' or 'absorption'")
     if y_values not in ['fractions', 'absorption', 'emission']:
@@ -345,10 +436,15 @@ def load_saury_data(data_path, x_values='emission', y_values='fractions'):
 
     if x_values == 'emission':
         x_data = fits.getdata(data_path + 'saury_Tb.fits')
+        x_data = x_data.astype(np.float32)
     elif x_values == 'absorption':
         x_data = fits.getdata(data_path + 'saury_Tau.fits')
+        x_data = x_data.astype(np.float32)
     else:
         raise ValueError("x_values must be either 'emission' or 'absorption'")
+    
+    if verbose:
+        print(f'Loading Saury data with x_values={x_values} and y_values={y_values}')
     
     # Change from (v, z, x) to (x*z, v)
     x_data = np.moveaxis(x_data, 0, -1)
@@ -360,6 +456,11 @@ def load_saury_data(data_path, x_values='emission', y_values='fractions'):
         fwnm = fits.getdata(data_path + 'saury_fwnm.fits')
         rhi = fits.getdata(data_path + 'saury_rhi.fits')
         
+        fcnm = fcnm.astype(np.float32)
+        funm = funm.astype(np.float32)
+        fwnm = fwnm.astype(np.float32)
+        rhi = rhi.astype(np.float32)
+        
         # Stack from (z, x) to (z, x, 4)
         fractions = np.stack((fcnm, funm, fwnm, rhi), axis=2)
         # Change from (z, x, 4) to (x*z, 4)
@@ -367,11 +468,13 @@ def load_saury_data(data_path, x_values='emission', y_values='fractions'):
         
     elif y_values == 'absorption':
         absorption = fits.getdata(data_path + 'saury_Tau.fits')
+        absorption = absorption.astype(np.float32)
         # Change from (v, z, x) to (x*z, 1)
         absorption = np.moveaxis(absorption, 0, -1)
         y_data = absorption.reshape(-1, absorption.shape[-1])
     elif y_values == 'emission':
         emission = fits.getdata(data_path + 'saury_Tb.fits')
+        emission = emission.astype(np.float32)
         # Change from (v, z, x) to (x*z, 1)
         emission = np.moveaxis(emission, 0, -1)
         y_data = emission.reshape(-1, emission.shape[-1])
@@ -380,7 +483,7 @@ def load_saury_data(data_path, x_values='emission', y_values='fractions'):
     
     return x_data, y_data
 
-def load_seta_data(data_path, sim_type='both', x_values='emission', y_values='fractions'):
+def load_seta_data(data_path, sim_type='both', x_values='emission', y_values='fractions', verbose=False):
     if sim_type not in ['both', 'comp', 'sol']:
         raise ValueError("sim_type must be 'both', 'comp', or 'sol'")
     
@@ -398,10 +501,15 @@ def load_seta_data(data_path, sim_type='both', x_values='emission', y_values='fr
     y_data = np.array([])
     
     for sim in sims:
+        if verbose:
+            print(f'Loading Seta simulation {sim} with x_values={x_values} and y_values={y_values}')
+        
         if x_values == 'emission':
             spectra = fits.getdata(data_path + f'seta_{sim}_Tb.fits')
+            spectra = spectra.astype(np.float32)
         elif x_values == 'absorption':
             spectra = fits.getdata(data_path + f'seta_{sim}_Tau.fits')
+            spectra = spectra.astype(np.float32)
         else:
             raise ValueError("x_values must be either 'emission' or 'absorption'")
         
@@ -420,6 +528,11 @@ def load_seta_data(data_path, sim_type='both', x_values='emission', y_values='fr
             fwnm = fits.getdata(data_path + f'seta_{sim}_fwnm.fits')
             rhi = fits.getdata(data_path + f'seta_{sim}_rhi.fits')
             
+            fcnm = fcnm.astype(np.float32)
+            funm = funm.astype(np.float32)
+            fwnm = fwnm.astype(np.float32)
+            rhi = rhi.astype(np.float32)
+            
             # Stack from (z, x) to (z, x, 4)
             fractions = np.stack((fcnm, funm, fwnm, rhi), axis=2)
             # Change from (z, x, 4) to (x*z, 4)
@@ -427,11 +540,13 @@ def load_seta_data(data_path, sim_type='both', x_values='emission', y_values='fr
             y_data_temp = fractions
         elif y_values == 'absorption':
             absorption = fits.getdata(data_path + f'seta_{sim}_Tau.fits')
+            absorption = absorption.astype(np.float32)
             # Change from (v, z, x) to (x*z, 1)
             absorption = np.moveaxis(absorption, 0, -1)
             y_data_temp = absorption.reshape(-1, absorption.shape[-1])
         elif y_values == 'emission':
             emission = fits.getdata(data_path + f'seta_{sim}_Tb.fits')
+            emission = emission.astype(np.float32)
             # Change from (v, z, x) to (x*z, 1)
             emission = np.moveaxis(emission, 0, -1)
             y_data_temp = emission.reshape(-1, emission.shape[-1])
@@ -542,6 +657,7 @@ def load_tigress_temp_data(data_path='/scratch/mk27/em8117/R8_2pc/', sim_number 
         print(f'Loading data for simulation {sim}')
         
         spectra = fits.getdata(f'/scratch/mk27/em8117/R8_2pc/0{sim}/{sim}_Tb_full.fits')[:,1600:1950,:]
+        spectra = spectra.astype(np.float32)
         temp = np.load(f'/scratch/mk27/em8117/R8_2pc/0{sim}/{sim}_temperature.npy')[1600:1950,:,:]
         
         all_spectra.append(spectra)
