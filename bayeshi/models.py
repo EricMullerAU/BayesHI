@@ -157,7 +157,11 @@ class BaseModel(nn.Module):
     def __init__(self, device=None, verbose=False):
         super().__init__()
         if device is None:
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+                device = 'mps'
+            else:
+                device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print('Using device:', device)
         self.device = torch.device(device)
         self.verbose = verbose
         self.default_weights_path = None  # to be set in subclasses if pretrained weights are available
@@ -1887,7 +1891,7 @@ class HISAClassifier(BaseModel):
         """ Preprocess inputs by unsqueezing to add channel dimension. """
         return x.unsqueeze(1).to(self.device) # Add channel dimension: (B, 1, L)
     
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
         self.to(self.device)
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
@@ -2185,49 +2189,70 @@ class ECAAttention(nn.Module):
         return x * y.expand_as(x)
 
 class HISAClassifier(BaseModel):
-    def __init__(self, input_dim=1, num_layers=4, attention=False):
-        super().__init__()
+    # def __init__(self, input_dim=1, num_layers=4, attention=False):
+    #     super().__init__()
+    #     self.default_weights_path = None
+        
+    #     self.input_dim = input_dim
+    #     self.num_layers = num_layers
+        
+    #     if self.num_layers != 4:
+    #         warnings.warn("HISAClassifier is currently designed for 4 layers. Using 4 layers regardless of num_layers parameter.")
+        
+    #     self.conv1 = nn.Conv1d(input_dim, 16, kernel_size=11, stride=1, padding=5)
+    #     self.relu = nn.ReLU()
+    #     self.conv2 = nn.Conv1d(16, 32, kernel_size=9, stride=1, padding=4)
+    #     self.conv3 = nn.Conv1d(32, 64, kernel_size=7, stride=1, padding=3)
+    #     self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=1, padding=2)
+        
+    #     if attention:
+    #         self.attention = ECAAttention(128, kernel_size=3)
+    #     else:
+    #         self.attention = None
+            
+    #     self.fc = nn.Linear(128 * 256, 128) # paddings mean input length won't change, so just multiply 256 by the number of filters from the final conv layer
+    #     self.classifier = nn.Linear(128, 2)
+        
+    # def forward(self, x):
+    #     x = self.relu(self.conv1(x))
+    #     x = self.relu(self.conv2(x))
+    #     x = self.relu(self.conv3(x))
+    #     x = self.relu(self.conv4(x))
+        
+    #     if self.attention is not None:
+    #         x = self.attention(x)
+        
+    #     x = x.view(x.size(0), -1)        
+    #     x = self.relu(self.fc(x))
+    #     x = self.classifier(x)
+    #     return x
+    # Replicate model from original code
+    def __init__(self, input_dim, attention, **kwargs):
+        super().__init__(**kwargs)
         self.default_weights_path = None
         
-        self.input_dim = input_dim
-        self.num_layers = num_layers
+        self.conv1 = nn.Conv1d(1, 16, kernel_size=5, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, padding=2)
         
-        if self.num_layers != 4:
-            warnings.warn("HISAClassifier is currently designed for 4 layers. Using 4 layers regardless of num_layers parameter.")
-        
-        self.conv1 = nn.Conv1d(input_dim, 16, kernel_size=11, stride=1, padding=5)
         self.relu = nn.ReLU()
-        self.conv2 = nn.Conv1d(16, 32, kernel_size=9, stride=1, padding=4)
-        self.conv3 = nn.Conv1d(32, 64, kernel_size=7, stride=1, padding=3)
-        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=1, padding=2)
+        self.pool = nn.MaxPool1d(2)
         
-        if attention:
-            self.attention = ECAAttention(128, kernel_size=3)
-        else:
-            self.attention = None
-            
-        self.fc = nn.Linear(128 * (input_dim // 16), 128)
-        self.classifier = nn.Linear(128, 2)
+        self.fc1 = nn.Linear(32 * 64, 64)
+        self.fc2 = nn.Linear(64, 2)  # Assuming binary classification
         
     def forward(self, x):
-        x = self.relu(self.conv1(x))
-        x = self.relu(self.conv2(x))
-        x = self.relu(self.conv3(x))
-        x = self.relu(self.conv4(x))
-        
-        if self.attention is not None:
-            x = self.attention(x)
-        
-        x = x.view(x.size(0), -1)
-        x = self.relu(self.fc(x))
-        x = self.classifier(x)
+        x = self.pool(self.relu(self.conv1(x)))
+        x = self.pool(self.relu(self.conv2(x)))
+        x = x.view(x.size(0), -1)  # Flatten the tensor
+        x = self.relu(self.fc1(x))
+        x = self.fc2(x)
         return x
     
     def preprocess_inputs(self, x):
         """ Preprocess inputs by unsqueezing to add channel dimension. """
         return x.unsqueeze(1).to(self.device) # Add channel dimension: (B, 1, L)
     
-    def fit(self, train_loader, val_loader, checkpoint_path, nEpochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
         self.to(self.device)
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(self.parameters(), lr=learningRate)
@@ -2244,7 +2269,7 @@ class HISAClassifier(BaseModel):
         print('Initial learning rate:', scheduler.get_last_lr())
         trainedEpochs = 0
 
-        for epoch in range(nEpochs):
+        for epoch in range(n_epochs):
             self.train()
             startTime = time.time()
             runningLoss = 0.0
@@ -2271,7 +2296,7 @@ class HISAClassifier(BaseModel):
             if lastLR != scheduler.get_last_lr():
                 print(f'Learning rate changed to {scheduler.get_last_lr()}')
 
-            print(f'Epoch [{epoch + 1}/{nEpochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
             epochTimes.append(time.time() - startTime)
 
             if valLoss < bestValLoss:
@@ -2281,29 +2306,7 @@ class HISAClassifier(BaseModel):
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
     
-    # Redefine the predict and evaluate methods to handle classification tasks
-    # Specifically, I want the predict method to return the class probabilities and the evaluate method to return accuracy
-    def evaluate(self, loader, criterion=nn.CrossEntropyLoss()):
-        self.eval()
-        totalLoss = 0.0
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for inputs, targets in loader:
-                inputs = self.preprocess_inputs(inputs)
-                targets = targets.to(self.device)
-                outputs = self(inputs)
-                loss = criterion(outputs, targets)
-                totalLoss += loss.item()
-                
-                probabilities = torch.softmax(outputs, dim=1)
-                _, predictions = torch.max(probabilities, dim=1)
-                correct += (predictions == targets).sum().item()
-                total += targets.size(0)
-        
-        avgLoss = totalLoss / len(loader)
-        accuracy = correct / total
-        return avgLoss, accuracy
+    # Redefine the predict method to handle classification tasks
     
     def predict(self, test_loader):
         self.eval()
