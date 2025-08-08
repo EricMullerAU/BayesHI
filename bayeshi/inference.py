@@ -18,7 +18,7 @@ import copy
 from .models import (
     SauryModel, BayesHIModel, TPCNetAllPhases, RNNModel, LSTMSequencePredictor, 
     TransformerWithAttentionAggregation, SimpleCNN, SimpleBNN, LSTMSequenceToSequence, 
-    BLSTMSequenceToSequence, MyBayesLSTM, VAE, SimpleBLSTM
+    BLSTMSequenceToSequence, MyBayesLSTM, VAE, SimpleBLSTM, HISAClassifier
 )
 from torch.cuda import is_available
 
@@ -107,6 +107,13 @@ MODEL_CONFIGS = {
     'SimpleBLSTM': {
         'class': BLSTMSequenceToSequence,
         'params': {}
+    },
+    'HISAClassifier': {
+        'class': HISAClassifier,
+        'params': {
+            'input_dim': 1,
+            'attention': False,
+        }
     }
 }
 

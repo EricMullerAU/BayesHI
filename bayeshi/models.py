@@ -33,6 +33,10 @@ Classes:
     Configurable deep CNN for sequence regression/classification.
 - SimpleBNN(BaseModel):
     Configurable deep Bayesian CNN for sequence regression/classification.
+- ECAAttention(nn.Module):
+    Efficient Channel Attention (ECA) module for enhancing feature representation in CNNs.
+- HISAClassifier(BaseModel):
+    Simple CNN model for HISA classification, using cross-entropy loss.
 Key Methods:
 ------------
 - forward(x):
@@ -154,7 +158,11 @@ class BaseModel(nn.Module):
     def __init__(self, device=None, verbose=False):
         super().__init__()
         if device is None:
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+                device = 'mps'
+            else:
+                device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print('Using device:', device)
         self.device = torch.device(device)
         self.verbose = verbose
         self.default_weights_path = None  # to be set in subclasses if pretrained weights are available
@@ -1826,6 +1834,117 @@ class SimpleBNN(BaseModel):
                     torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+class ECAAttention(nn.Module):
+    def __init__(self, channels, kernel_size=3):
+        super(ECAAttention, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.conv = nn.Conv1d(1, 1, kernel_size=kernel_size, padding=(kernel_size - 1) // 2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        b, c, _ = x.size()
+        y = self.avg_pool(x).view(b, 1, c)
+        y = self.conv(y)
+        y = self.sigmoid(y)
+        return x * y.expand_as(x)
+
+class HISAClassifier(BaseModel):
+    def __init__(self, input_dim=1, num_layers=4, attention=False):
+        super().__init__()
+        self.default_weights_path = None
+        
+        self.input_dim = input_dim
+        self.num_layers = num_layers
+        
+        if self.num_layers != 4:
+            warnings.warn("HISAClassifier is currently designed for 4 layers. Using 4 layers regardless of num_layers parameter.")
+        
+        self.conv1 = nn.Conv1d(input_dim, 16, kernel_size=11, stride=1, padding=5)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=9, stride=1, padding=4)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=7, stride=1, padding=3)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=1, padding=2)
+        
+        if attention:
+            self.attention = ECAAttention(128, kernel_size=3)
+        else:
+            self.attention = None
+            
+        self.fc = nn.Linear(128 * (input_dim // 16), 128)
+        self.classifier = nn.Linear(128, 2)
+        
+    def forward(self, x):
+        x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
+        x = self.relu(self.conv3(x))
+        x = self.relu(self.conv4(x))
+        
+        if self.attention is not None:
+            x = self.attention(x)
+        
+        x = x.view(x.size(0), -1)
+        x = self.relu(self.fc(x))
+        x = self.classifier(x)
+        return x
+    
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add channel dimension. """
+        return x.unsqueeze(1).to(self.device) # Add channel dimension: (B, 1, L)
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+        self.to(self.device)
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+
+        for epoch in range(n_epochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+                probabilities = torch.softmax(outputs, dim=1)
+                confidence, predictions = torch.max(probabilities, dim=1)
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader, criterion)
+            valErrors.append(valLoss)
+    
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+
+        return trainErrors, valErrors, trainedEpochs, epochTimes
 
 
 class BayesLSTM(nn.Module):
@@ -2154,6 +2273,254 @@ class SimpleBLSTM(BaseModel):
                     torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+class SimpleBLSTM(BaseModel):
+    ''' A simple LSTM model that just uses a Bayesian linear output layer to put uncertainties on each of the output features'''
+    def __init__(self, input_dim=1, hidden_dim=128, prior_mu=0.0, prior_sigma=0.1, num_layers=2, output_dim=1, kl_weight=0.01, clamp=False, **kwargs):
+        super().__init__(**kwargs)
+        self.default_weights_path = root_dir / 'weights' / 'simple_blstm.pth'
+        
+        self.kl_weight = kl_weight
+
+        self.lstm = nn.LSTM(input_size=input_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True)
+        self.head = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma, in_features=hidden_dim, out_features=output_dim)
+
+        self.to(self.device)
+        
+    def lossFunction(self, outputs, targets):
+        MSE = nn.MSELoss()
+        BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
+        return MSE(outputs, targets) + self.kl_weight * BKLoss(self)
+    
+    def forward(self, x):
+        """
+        x: Tensor of shape (B, 1, 256)
+        Returns:
+            output: (B, 256) or (B, 256, output_dim) depending on output_dim
+        """
+        x = x.to(self.device)
+        B, H, L = x.shape
+        assert H == 1, f"Expected input shape (B, 1, L), got {x.shape}"
+
+        x = x.view(B, L).unsqueeze(-1)       # (B, L, 1)
+        x, _ = self.lstm(x)                  # (B, L, hidden_dim)
+        x = self.head(x)                     # (B, L, output_dim)
+
+        if x.shape[-1] == 1:
+            x = x.squeeze(-1)                # (B, L)
+
+        # Clamp the outputs to ensure they are between 0 and 1
+        if self.clamp is True:
+            warnings.warn("Clamping outputs to [0, 1]. This should only be used when predicting absorption spectra that have been transformed to e^-tau.")
+            x = torch.clamp(x, 0, 1)
+
+        return x
+    
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
+        return x.unsqueeze(1).to(self.device)
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
+        self.to(self.device)
+        criterion = self.lossFunction
+        optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = earlyStopper(patience=stopper_patience, tol=stopper_tol)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+        
+        for epoch in range(n_epochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = inputs.unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader)
+            valErrors.append(valLoss)
+            
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+                
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+            
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+class ECAAttention(nn.Module):
+    def __init__(self, channels, kernel_size=3):
+        super(ECAAttention, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.conv = nn.Conv1d(1, 1, kernel_size=kernel_size, padding=(kernel_size - 1) // 2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        b, c, _ = x.size()
+        y = self.avg_pool(x).view(b, 1, c)
+        y = self.conv(y)
+        y = self.sigmoid(y)
+        return x * y.expand_as(x)
+
+class HISAClassifier(BaseModel):
+    # def __init__(self, input_dim=1, num_layers=4, attention=False):
+    #     super().__init__()
+    #     self.default_weights_path = None
+        
+    #     self.input_dim = input_dim
+    #     self.num_layers = num_layers
+        
+    #     if self.num_layers != 4:
+    #         warnings.warn("HISAClassifier is currently designed for 4 layers. Using 4 layers regardless of num_layers parameter.")
+        
+    #     self.conv1 = nn.Conv1d(input_dim, 16, kernel_size=11, stride=1, padding=5)
+    #     self.relu = nn.ReLU()
+    #     self.conv2 = nn.Conv1d(16, 32, kernel_size=9, stride=1, padding=4)
+    #     self.conv3 = nn.Conv1d(32, 64, kernel_size=7, stride=1, padding=3)
+    #     self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=1, padding=2)
+        
+    #     if attention:
+    #         self.attention = ECAAttention(128, kernel_size=3)
+    #     else:
+    #         self.attention = None
+            
+    #     self.fc = nn.Linear(128 * 256, 128) # paddings mean input length won't change, so just multiply 256 by the number of filters from the final conv layer
+    #     self.classifier = nn.Linear(128, 2)
+        
+    # def forward(self, x):
+    #     x = self.relu(self.conv1(x))
+    #     x = self.relu(self.conv2(x))
+    #     x = self.relu(self.conv3(x))
+    #     x = self.relu(self.conv4(x))
+        
+    #     if self.attention is not None:
+    #         x = self.attention(x)
+        
+    #     x = x.view(x.size(0), -1)        
+    #     x = self.relu(self.fc(x))
+    #     x = self.classifier(x)
+    #     return x
+    # Replicate model from original code
+    def __init__(self, input_dim, attention, **kwargs):
+        super().__init__(**kwargs)
+        self.default_weights_path = None
+        
+        self.conv1 = nn.Conv1d(1, 16, kernel_size=5, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, padding=2)
+        
+        self.relu = nn.ReLU()
+        self.pool = nn.MaxPool1d(2)
+        
+        self.fc1 = nn.Linear(32 * 64, 64)
+        self.fc2 = nn.Linear(64, 2)  # Assuming binary classification
+        
+    def forward(self, x):
+        x = self.pool(self.relu(self.conv1(x)))
+        x = self.pool(self.relu(self.conv2(x)))
+        x = x.view(x.size(0), -1)  # Flatten the tensor
+        x = self.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+    
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add channel dimension. """
+        return x.unsqueeze(1).to(self.device) # Add channel dimension: (B, 1, L)
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+        self.to(self.device)
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+
+        for epoch in range(n_epochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+                probabilities = torch.softmax(outputs, dim=1)
+                confidence, predictions = torch.max(probabilities, dim=1)
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader, criterion)
+            valErrors.append(valLoss)
+    
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4f}, Validation Loss: {valLoss:.4f}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+    # Redefine the predict method to handle classification tasks
+    
+    def predict(self, test_loader):
+        self.eval()
+        all_predictions = []
+        all_probabilities = []
+        with torch.no_grad():
+            for inputs, *_ in test_loader:
+                inputs = self.preprocess_inputs(inputs)
+                outputs = self(inputs)
+                probabilities = torch.softmax(outputs, dim=1)
+                _, predictions = torch.max(probabilities, dim=1)
+                all_predictions.append(predictions)
+                all_probabilities.append(probabilities)
+        
+        return torch.cat(all_predictions, dim=0), torch.cat(all_probabilities, dim=0)
 
 class VAE(BaseModel):
     def __init__(self, input_dim=256, hidden_dim=128, latent_dim=32, **kwargs):
