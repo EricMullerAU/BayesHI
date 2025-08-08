@@ -70,6 +70,7 @@ from tqdm import tqdm
 from pathlib import Path
 from blitz.modules import BayesianLSTM
 from blitz.utils import variational_estimator
+import warnings
 
 # For VAE visualiser.
 import matplotlib.pyplot as plt
@@ -2054,6 +2055,105 @@ class MyBayesLSTM(BaseModel):
                     torch.save(self.state_dict(), checkpoint_path)
                     
         return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+class SimpleBLSTM(BaseModel):
+    ''' A simple LSTM model that just uses a Bayesian linear output layer to put uncertainties on each of the output features'''
+    def __init__(self, input_dim=1, hidden_dim=128, prior_mu=0.0, prior_sigma=0.1, num_layers=2, output_dim=1, kl_weight=0.01, clamp=False, **kwargs):
+        super().__init__(**kwargs)
+        self.default_weights_path = root_dir / 'weights' / 'simple_blstm.pth'
+        
+        self.kl_weight = kl_weight
+
+        self.lstm = nn.LSTM(input_size=input_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True)
+        self.head = bnn.BayesLinear(prior_mu=prior_mu, prior_sigma=prior_sigma, in_features=hidden_dim, out_features=output_dim)
+
+        self.to(self.device)
+        
+    def lossFunction(self, outputs, targets):
+        MSE = nn.MSELoss()
+        BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
+        return MSE(outputs, targets) + self.kl_weight * BKLoss(self)
+    
+    def forward(self, x):
+        """
+        x: Tensor of shape (B, 1, 256)
+        Returns:
+            output: (B, 256) or (B, 256, output_dim) depending on output_dim
+        """
+        x = x.to(self.device)
+        B, H, L = x.shape
+        assert H == 1, f"Expected input shape (B, 1, L), got {x.shape}"
+
+        x = x.view(B, L).unsqueeze(-1)       # (B, L, 1)
+        x, _ = self.lstm(x)                  # (B, L, hidden_dim)
+        x = self.head(x)                     # (B, L, output_dim)
+
+        if x.shape[-1] == 1:
+            x = x.squeeze(-1)                # (B, L)
+
+        # Clamp the outputs to ensure they are between 0 and 1
+        if self.clamp is True:
+            warnings.warn("Clamping outputs to [0, 1]. This should only be used when predicting absorption spectra that have been transformed to e^-tau.")
+            x = torch.clamp(x, 0, 1)
+
+        return x
+    
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add number of dimensions in the sequence. """
+        return x.unsqueeze(1).to(self.device)
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
+        self.to(self.device)
+        criterion = self.lossFunction
+        optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        # earlyStop = earlyStopper(patience=stopper_patience, tol=stopper_tol)
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+        
+        for epoch in range(n_epochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = inputs.unsqueeze(1).to(self.device)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader)
+            valErrors.append(valLoss)
+            
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+                
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+            
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+
+        return trainErrors, valErrors, trainedEpochs, epochTimes
 
 class VAE(BaseModel):
     def __init__(self, input_dim=256, hidden_dim=128, latent_dim=32, **kwargs):
@@ -2215,3 +2315,221 @@ class VAE(BaseModel):
             plt.xlabel('Latent Dimension 1')
         plt.title('Latent Space Visualization')
         plt.show()
+        
+class PaperModel(BaseModel):
+    ''' A modification to BayesHI that allows for the following parameters to be modified for use in grid searches:
+    - Number of CNN blocks
+    - Large conv size
+    - small conv size
+    - reduction of channel number per layer (instead of fixed 8)
+    - Number of transformer dims
+    - number of transformer layers
+    - Optimiser
+    - KL div coeff
+    - batch size
+    - Initial LR
+    - LR scheduler
+    '''
+    def __init__(self,
+            *,
+            cnn_blocks         = 3,
+            prior_mu           = 0.0,
+            prior_sigma        = 0.1,
+            kl_weight          = 0.01,
+            small_kernel       = 7,
+            large_kernel       = 33,
+            channel_reduction  = 8,
+            transformer_dim    = 9,
+            transformer_layers = 4,
+            transformer_head   = 3,
+            transformer_hidden = 64,
+            optimizer          = 'adam',
+            **kwargs
+        ):
+        super().__init__(**kwargs)
+        self.default_weights_path = None
+        
+        self.cnn_blocks = cnn_blocks
+        self.prior_mu = prior_mu
+        self.prior_sigma = prior_sigma
+        self.kl_weight = kl_weight
+        self.small_kernel = small_kernel
+        self.large_kernel = large_kernel
+        self.channel_reduction = channel_reduction
+        self.transformer_dim = transformer_dim
+        self.transformer_layers = transformer_layers
+        self.optimizer_type = optimizer
+        
+        # We know the number of CNN blocks and the number of channels to reduce by, so we can calculate the number of channels in each block
+        channel_list = np.arange(channel_reduction * 2, ((cnn_blocks * 2 + 1) * channel_reduction) + 1, channel_reduction)[::-1]
+    
+        Hout, Wout = 1, 256  # Initial input size
+        
+        for i in range(cnn_blocks):
+            if i == 0:
+                in_channels = 1
+            else:
+                in_channels = out_channels
+            mid_channels = channel_list[2*i]
+            out_channels = channel_list[2*i + 1]
+            
+            if self.verbose:
+                print(f'Adding CNN block {i + 1}: in_channels={in_channels}, mid_channels={mid_channels}, out_channels={out_channels}')
+            
+            self.conv_layers.append(
+                bnn.BayesConv2d(
+                    prior_mu=prior_mu,
+                    prior_sigma=prior_sigma,
+                    in_channels=in_channels,
+                    out_channels=mid_channels,
+                    kernel_size=(1, self.small_kernel),
+                    stride=1,
+                    padding=0,
+                    bias=True,
+                    padding_mode='zeros'
+                )
+            )
+            self.conv_layers.append(bnn.BayesBatchNorm2d(prior_mu, prior_sigma, mid_channels))
+            self.conv_layers.append(nn.ReLU())
+            self.conv_layers.append(
+                bnn.BayesConv2d(
+                    prior_mu=prior_mu,
+                    prior_sigma=prior_sigma,
+                    in_channels=mid_channels,
+                    out_channels=out_channels,
+                    kernel_size=(1, self.large_kernel),
+                    stride=1,
+                    padding=0,
+                    bias=True,
+                    padding_mode='zeros'
+                )
+            )
+            self.conv_layers.append(bnn.BayesBatchNorm2d(prior_mu, prior_sigma, out_channels))
+            self.conv_layers.append(nn.ReLU())
+            
+            # Calculate output size after this block
+            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, self.small_kernel], s=[1, 1], p=[0, 0], d=[1, 1])
+            Hout, Wout = self.get_output_size(Hout, Wout, k=[1, self.large_kernel], s=[1, 1], p=[0, 0], d=[1, 1])
+            
+        self.flatten = nn.Flatten()
+        self.linear = bnn.BayesLinear(prior_mu, prior_sigma, out_channels * Wout, transformer_dim)
+        
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=transformer_dim, nhead=transformer_head, dim_feedforward=transformer_hidden, batch_first=True),
+            num_layers=transformer_layers
+        )
+        
+        self.head = bnn.BayesLinear(prior_mu, prior_sigma, transformer_dim, 4)
+        
+    def lossFunction(self, outputs, targets):
+        MSE = nn.MSELoss()
+        BKLoss = bnn.BKLLoss(reduction='mean', last_layer_only=False)
+        return MSE(outputs, targets) + self.kl_weight * BKLoss(self)
+    
+    def forward(self, x):
+        for layer in self.conv_layers:
+            if isinstance(layer, bnn.BayesConv2d):
+                x = layer(x)
+            elif isinstance(layer, bnn.BayesBatchNorm2d):
+                x = layer(x)
+            elif isinstance(layer, nn.ReLU):
+                x = F.relu(x)
+            else:
+                raise ValueError(f"Unsupported layer type: {type(layer)}")
+        
+        x = self.flatten(x)
+        x = self.linear(x)
+        
+        # Transformer expects input shape (B, L, D), where L is sequence length and D is feature dimension
+        x = x.unsqueeze(1)
+        x = self.transformer(x)  # (B, L, transformer_dim)
+        
+        x = self.head(x)
+        
+        if x.shape[-1] == 1:
+            x = x.squeeze(-1)
+            
+        return x
+    
+    def preprocess_inputs(self, x):
+        """ Preprocess inputs by unsqueezing to add channel and height dimensions. """
+        return x.unsqueeze(1).unsqueeze(1).to(self.device)
+    
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learning_rate=0.001, scheduler='plateau', scheduler_step=15, stopper_patience=20, stopper_tol=0.0001):
+        self.to(self.device)
+        criterion = self.lossFunction
+        if self.optimizer_type == 'adam':
+            optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+        elif self.optimizer_type == 'adamw':
+            optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
+        elif self.optimizer_type == 'sgd':
+            optimizer = optim.SGD(self.parameters(), lr=learning_rate, momentum=0.9)
+        else:
+            raise ValueError(f"Unsupported optimizer type: {self.optimizer_type}")
+        
+        if scheduler == 'plateau':
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=scheduler_step)
+        elif scheduler == 'step':
+            scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=scheduler_step, gamma=0.1)
+        elif scheduler == 'cyclical':
+            scheduler = optim.lr_scheduler.CyclicLR(optimizer, base_lr=learning_rate / 10, max_lr=learning_rate, step_size_up=scheduler_step, mode='triangular')
+        else:
+            raise ValueError(f"Unsupported scheduler type: {scheduler}")
+        
+        if self.verbose:
+            print(f'Using optimizer: {self.optimizer_type}')
+            print(f'Using scheduler: {scheduler}')
+        
+        trainErrors = []
+        valErrors = []
+        epochTimes = []
+        bestValLoss = float('inf')
+        
+        if checkpoint_path != None and checkpoint_path[-4:] != '.pth':
+            raise ValueError("Checkpoint path must end with .pth")
+        
+        print('Training Model')
+        print('Initial learning rate:', scheduler.get_last_lr())
+        trainedEpochs = 0
+        
+        for epoch in range(n_epochs):
+            self.train()
+            startTime = time.time()
+            runningLoss = 0.0
+            loop = tqdm(train_loader, file=sys.stdout, desc=f'Epoch {epoch + 1}', unit='batch') if self.verbose else train_loader
+            for inputs, targets in loop:
+                inputs = self.preprocess_inputs(inputs)
+                targets = targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                runningLoss += loss.item()
+            trainLoss = runningLoss / len(train_loader)
+            trainErrors.append(trainLoss)
+            trainedEpochs += 1
+            valLoss = self.evaluate(val_loader)
+            valErrors.append(valLoss)
+    
+            lastLR = scheduler.get_last_lr()
+            scheduler.step(valLoss)
+            if lastLR != scheduler.get_last_lr():
+                print(f'Learning rate changed to {scheduler.get_last_lr()}')
+
+            print(f'Epoch [{epoch + 1}/{n_epochs}], Train Loss: {trainLoss:.4g}, Validation Loss: {valLoss:.4g}, took {time.time() - startTime:.2f}s')
+            epochTimes.append(time.time() - startTime)
+
+            if valLoss < bestValLoss:
+                bestValLoss = valLoss
+                if checkpoint_path is not None:
+                    torch.save(self.state_dict(), checkpoint_path)
+
+        return trainErrors, valErrors, trainedEpochs, epochTimes
+    
+# class CNNClassifier(BaseModel):
+#     ''' A simple CNN classifier that outputs the probabilities for two classes.
+#     This will be used to try and predict if an emission spectrum has HI self-absorption (HISA) or not.
+#     '''
+#     def __init__(self, input_dim=256, num_classes=2, **kwargs):
+        
