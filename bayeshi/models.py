@@ -2426,17 +2426,36 @@ class HISAClassifier(BaseModel):
     #     x = self.classifier(x)
     #     return x
     # Replicate model from original code
-    def __init__(self, input_dim, attention, **kwargs):
+    def __init__(self, input_len, **kwargs):
         super().__init__(**kwargs)
         self.default_weights_path = None
         
-        self.conv1 = nn.Conv1d(1, 16, kernel_size=5, padding=2)
-        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, padding=2)
+        # Calculate the kernel size from the input length.
+        # Default is 5 for 256 input length - apply this same scaling and round to the nearest odd number.
+        kernel_size = input_len // 256 * 5
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+            
+        print('Input length:', input_len, 'Kernel size:', kernel_size)
         
+        self.conv1 = nn.Conv1d(1, 16, kernel_size=kernel_size, padding=2)
+        H1, W1 = self.get_output_size(1, input_len, [1, kernel_size], s=[1, 1], p=[0, 2], d=[1, 1])
+        print('Input size:', input_len, 'Output size after first conv:', H1, W1)
+        # Also apply max pooling after the first convolution
+        H2, W2 = self.get_output_size(H1, W1, [1, 2], s=[1, 2], p=[0, 0], d=[1, 1])
+        print('Output size after first pooling:', H2, W2)
+        
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=kernel_size, padding=2)
+        H3, W3 = self.get_output_size(H2, W2, [1, kernel_size], s=[1, 1], p=[0, 2], d=[1, 1])
+        print('Output size after second conv:', H3, W3)
+        # Also apply max pooling after the second convolution
+        H4, W4 = self.get_output_size(H3, W3, [1, 2], s=[1, 2], p=[0, 0], d=[1, 1])
+        print('Output size after second pooling:', H4, W4)
+
         self.relu = nn.ReLU()
         self.pool = nn.MaxPool1d(2)
         
-        self.fc1 = nn.Linear(32 * 64, 64)
+        self.fc1 = nn.Linear(32 * W4, 64)
         self.fc2 = nn.Linear(64, 2)  # Assuming binary classification
         
     def forward(self, x):
@@ -2446,6 +2465,11 @@ class HISAClassifier(BaseModel):
         x = self.relu(self.fc1(x))
         x = self.fc2(x)
         return x
+    
+    def get_output_size(self, Hin, Win, k, s=[1, 1], p=[0, 0], d=[1, 1]):
+        Hout = int((Hin + 2 * p[0] - d[0] * (k[0] - 1) - 1) / s[0] + 1)
+        Wout = int((Win + 2 * p[1] - d[1] * (k[1] - 1) - 1) / s[1] + 1)
+        return Hout, Wout
     
     def preprocess_inputs(self, x):
         """ Preprocess inputs by unsqueezing to add channel dimension. """

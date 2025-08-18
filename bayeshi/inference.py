@@ -111,8 +111,9 @@ MODEL_CONFIGS = {
     'HISAClassifier': {
         'class': HISAClassifier,
         'params': {
-            'input_dim': 1,
-            'attention': False,
+            'input_len': 256,  # Length of the input sequence
+            # 'input_dim': 1,
+            # 'attention': False,
         }
     }
 }
