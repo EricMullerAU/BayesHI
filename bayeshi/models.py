@@ -2388,45 +2388,7 @@ class ECAAttention(nn.Module):
         return x * y.expand_as(x)
 
 class HISAClassifier(BaseModel):
-    # def __init__(self, input_dim=1, num_layers=4, attention=False):
-    #     super().__init__()
-    #     self.default_weights_path = None
-        
-    #     self.input_dim = input_dim
-    #     self.num_layers = num_layers
-        
-    #     if self.num_layers != 4:
-    #         warnings.warn("HISAClassifier is currently designed for 4 layers. Using 4 layers regardless of num_layers parameter.")
-        
-    #     self.conv1 = nn.Conv1d(input_dim, 16, kernel_size=11, stride=1, padding=5)
-    #     self.relu = nn.ReLU()
-    #     self.conv2 = nn.Conv1d(16, 32, kernel_size=9, stride=1, padding=4)
-    #     self.conv3 = nn.Conv1d(32, 64, kernel_size=7, stride=1, padding=3)
-    #     self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=1, padding=2)
-        
-    #     if attention:
-    #         self.attention = ECAAttention(128, kernel_size=3)
-    #     else:
-    #         self.attention = None
-            
-    #     self.fc = nn.Linear(128 * 256, 128) # paddings mean input length won't change, so just multiply 256 by the number of filters from the final conv layer
-    #     self.classifier = nn.Linear(128, 2)
-        
-    # def forward(self, x):
-    #     x = self.relu(self.conv1(x))
-    #     x = self.relu(self.conv2(x))
-    #     x = self.relu(self.conv3(x))
-    #     x = self.relu(self.conv4(x))
-        
-    #     if self.attention is not None:
-    #         x = self.attention(x)
-        
-    #     x = x.view(x.size(0), -1)        
-    #     x = self.relu(self.fc(x))
-    #     x = self.classifier(x)
-    #     return x
-    # Replicate model from original code
-    def __init__(self, input_len, **kwargs):
+    def __init__(self, input_len, n_layers, n_kernels, **kwargs):
         super().__init__(**kwargs)
         self.default_weights_path = None
         
@@ -2436,34 +2398,75 @@ class HISAClassifier(BaseModel):
         if kernel_size % 2 == 0:
             kernel_size += 1
             
-        print('Input length:', input_len, 'Kernel size:', kernel_size)
+        # Also adapt the padding to keep the output size the same as the input size
+        pad_len = (kernel_size - 1) // 2
+            
+        print('Input length:', input_len, 'Kernel size:', kernel_size, 'Number of layers:', n_layers, 'Number of kernels per layer:', n_kernels)
         
-        self.conv1 = nn.Conv1d(1, 16, kernel_size=kernel_size, padding=2)
-        H1, W1 = self.get_output_size(1, input_len, [1, kernel_size], s=[1, 1], p=[0, 2], d=[1, 1])
-        print('Input size:', input_len, 'Output size after first conv:', H1, W1)
-        # Also apply max pooling after the first convolution
-        H2, W2 = self.get_output_size(H1, W1, [1, 2], s=[1, 2], p=[0, 0], d=[1, 1])
-        print('Output size after first pooling:', H2, W2)
+        # self.conv1 = nn.Conv1d(1, 16, kernel_size=kernel_size, padding=pad_len)
+        # H1, W1 = self.get_output_size(1, input_len, [1, kernel_size], s=[1, 1], p=[0, pad_len], d=[1, 1])
+        # print('Input size:', input_len, 'Output size after first conv:', H1, W1)
+        # # Also apply max pooling after the first convolution
+        # H2, W2 = self.get_output_size(H1, W1, [1, 2], s=[1, 2], p=[0, 0], d=[1, 1])
+        # print('Output size after first pooling:', H2, W2)
         
-        self.conv2 = nn.Conv1d(16, 32, kernel_size=kernel_size, padding=2)
-        H3, W3 = self.get_output_size(H2, W2, [1, kernel_size], s=[1, 1], p=[0, 2], d=[1, 1])
-        print('Output size after second conv:', H3, W3)
-        # Also apply max pooling after the second convolution
-        H4, W4 = self.get_output_size(H3, W3, [1, 2], s=[1, 2], p=[0, 0], d=[1, 1])
-        print('Output size after second pooling:', H4, W4)
+        # self.conv2 = nn.Conv1d(16, 32, kernel_size=kernel_size, padding=pad_len)
+        # H3, W3 = self.get_output_size(H2, W2, [1, kernel_size], s=[1, 1], p=[0, pad_len], d=[1, 1])
+        # print('Output size after second conv:', H3, W3)
+        # # Also apply max pooling after the second convolution
+        # H4, W4 = self.get_output_size(H3, W3, [1, 2], s=[1, 2], p=[0, 0], d=[1, 1])
+        # print('Output size after second pooling:', H4, W4)
 
+        # self.relu = nn.ReLU()
+        # self.pool = nn.MaxPool1d(2)
+        
+        # self.fc1 = nn.Linear(32 * W4, 64)
+        # self.fc2 = nn.Linear(64, 2)  # Assuming binary classification
+        
+        self.conv_layers = nn.ModuleList()
+        for i in range(n_layers):
+            in_channels = 1 if i == 0 else n_kernels * i
+            out_channels = n_kernels * (i + 1)
+            conv = nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size, padding=pad_len)
+            self.conv_layers.append(conv)
+            H, W = self.get_output_size(1 if i == 0 else n_kernels * i, input_len if i == 0 else W, [1, kernel_size], s=[1, 1], p=[0, pad_len], d=[1, 1])
+            print(f'Output size after conv layer {i + 1}: {H} x {W}')
+            # Apply max pooling after each convolution
+            H, W = self.get_output_size(H, W, [1, 2], s=[1, 2], p=[0, 0], d=[1, 1])
+            print(f'Output size after pooling layer {i + 1}: {H} x {W}')
+        
         self.relu = nn.ReLU()
         self.pool = nn.MaxPool1d(2)
         
-        self.fc1 = nn.Linear(32 * W4, 64)
-        self.fc2 = nn.Linear(64, 2)  # Assuming binary classification
+        self.linear_layers = nn.ModuleList()
+        for i in range(n_layers):
+            in_features = n_kernels * (i + 1) * (W if i == 0 else W // (2 ** i))
+            # Halve the number of features in each subsequent layer
+            out_features = max(16, in_features // 2)
+            fc = nn.Linear(in_features, out_features)
+            self.linear_layers.append(fc)
+            print(f'Linear layer {i + 1}: {in_features} -> {out_features}')
+            W = out_features  # Update W for the next layer
+        self.fc_final = nn.Linear(max(16, out_features), 2)
         
     def forward(self, x):
-        x = self.pool(self.relu(self.conv1(x)))
-        x = self.pool(self.relu(self.conv2(x)))
+        # x = self.pool(self.relu(self.conv1(x)))
+        # x = self.pool(self.relu(self.conv2(x)))
+        # x = x.view(x.size(0), -1)  # Flatten the tensor
+        # x = self.relu(self.fc1(x))
+        # x = self.fc2(x)
+        # return x
+        
+        for conv in self.conv_layers:
+            x = self.pool(self.relu(conv(x)))
+        
         x = x.view(x.size(0), -1)  # Flatten the tensor
-        x = self.relu(self.fc1(x))
-        x = self.fc2(x)
+        
+        for fc in self.linear_layers:
+            x = self.relu(fc(x))
+            
+        x = self.fc_final(x)
+        
         return x
     
     def get_output_size(self, Hin, Win, k, s=[1, 1], p=[0, 0], d=[1, 1]):
@@ -2506,7 +2509,7 @@ class HISAClassifier(BaseModel):
                 loss.backward()
                 optimizer.step()
                 runningLoss += loss.item()
-                probabilities = torch.softmax(outputs, dim=1)
+                probabilities = F.log_softmax(outputs, dim=1)
                 confidence, predictions = torch.max(probabilities, dim=1)
             trainLoss = runningLoss / len(train_loader)
             trainErrors.append(trainLoss)

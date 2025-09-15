@@ -112,8 +112,8 @@ MODEL_CONFIGS = {
         'class': HISAClassifier,
         'params': {
             'input_len': 256,  # Length of the input sequence
-            # 'input_dim': 1,
-            # 'attention': False,
+            'n_layers': 2,   # Number of convolutional (and linear) layers
+            'n_kernels': 16,  # Number of kernels in each convolutional layer
         }
     }
 }
