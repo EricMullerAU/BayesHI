@@ -2390,7 +2390,7 @@ class ECAAttention(nn.Module):
 class HISAClassifier(BaseModel):
     def __init__(self, input_len, n_layers, n_kernels, **kwargs):
         super().__init__(**kwargs)
-        self.default_weights_path = None
+        self.default_weights_path = root_dir / 'weights' / 'hisa_classifier.pth'
         
         # Calculate the kernel size from the input length.
         # Default is 5 for 256 input length - apply this same scaling and round to the nearest odd number.
@@ -2920,10 +2920,4 @@ class PaperModel(BaseModel):
                     torch.save(self.state_dict(), checkpoint_path)
 
         return trainErrors, valErrors, trainedEpochs, epochTimes
-    
-# class CNNClassifier(BaseModel):
-#     ''' A simple CNN classifier that outputs the probabilities for two classes.
-#     This will be used to try and predict if an emission spectrum has HI self-absorption (HISA) or not.
-#     '''
-#     def __init__(self, input_dim=256, num_classes=2, **kwargs):
         
