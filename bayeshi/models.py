@@ -2388,17 +2388,18 @@ class ECAAttention(nn.Module):
         return x * y.expand_as(x)
 
 class HISAClassifier(BaseModel):
-    def __init__(self, input_len, n_layers, n_kernels, **kwargs):
+    def __init__(self, input_len, n_layers, n_kernels, kernel_size, **kwargs):
         super().__init__(**kwargs)
         self.default_weights_path = root_dir / 'weights' / 'hisa_classifier.pth'
         
-        # Calculate the kernel size from the input length.
-        # Default is 5 for 256 input length - apply this same scaling and round to the nearest odd number.
-        kernel_size = input_len // 256 * 5
-        if kernel_size % 2 == 0:
-            kernel_size += 1
+        if kernel_size is None:
+            # Calculate the kernel size from the input length.
+            # Default is 5 for 256 input length - apply this same scaling and round to the nearest odd number.
+            kernel_size = input_len // 256 * 5
+            if kernel_size % 2 == 0:
+                kernel_size += 1
             
-        # Also adapt the padding to keep the output size the same as the input size
+        # Adapt the padding to keep the output size the same as the input size
         pad_len = (kernel_size - 1) // 2
             
         print('Input length:', input_len, 'Kernel size:', kernel_size, 'Number of layers:', n_layers, 'Number of kernels per layer:', n_kernels)
@@ -2478,10 +2479,10 @@ class HISAClassifier(BaseModel):
         """ Preprocess inputs by unsqueezing to add channel dimension. """
         return x.unsqueeze(1).to(self.device) # Add channel dimension: (B, 1, L)
     
-    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, learningRate=0.001, schedulerStep=15, stopperPatience=20, stopperTol=0.0001):
+    def fit(self, train_loader, val_loader, checkpoint_path, n_epochs=100, lr=0.001, schedulerStep=15):
         self.to(self.device)
         criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(self.parameters(), lr=learningRate)
+        optimizer = optim.Adam(self.parameters(), lr=lr)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=schedulerStep)
         trainErrors = []
         valErrors = []
